@@ -1,0 +1,7 @@
+{
+  "status": "PASS",
+  "check": "Installed Google-only package + real MCP wire preview",
+  "no_runtime_demo_module": true,
+  "live_writes": 0,
+  "preview_returned": true
+}

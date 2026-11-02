@@ -1,0 +1,26 @@
+name: Budgeted live API smoke
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * 1'
+permissions:
+  contents: read
+concurrency:
+  group: live-api-smoke
+  cancel-in-progress: false
+jobs:
+  read-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.lock
+      - run: python -m pip install --no-deps -e .
+      - run: python scripts/live_smoke.py
+        env:
+          LIVE_CLIENT_ID: ${{ secrets.LIVE_CLIENT_ID }}
+          LIVE_CLIENT_SECRET: ${{ secrets.LIVE_CLIENT_SECRET }}
+          LIVE_REFRESH_TOKEN: ${{ secrets.LIVE_REFRESH_TOKEN }}

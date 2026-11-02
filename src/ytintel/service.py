@@ -1,0 +1,239 @@
+"""Application use cases depend on a provider protocol, not HTTP or Google details."""
+
+import asyncio
+import secrets
+import time
+from functools import wraps
+
+from .domain import Constraints, analyse, rank, select, similarities, video_id
+from .errors import AppError
+from .providers.base import Provider
+
+
+def account_operation(method):
+    """Serialize workflows with reauthorization so results cannot cross Google accounts."""
+
+    @wraps(method)
+    async def run(self, *args, **kwargs):
+        async with self.account_lock:
+            return await method(self, *args, **kwargs)
+
+    return run
+
+
+class Intelligence:
+    def __init__(self, provider: Provider, store, quota, require_write=None, account_lock=None):
+        self.provider, self.store, self.quota = provider, store, quota
+        self.require_write = require_write or (lambda: None)
+        self.account_lock = account_lock or asyncio.Lock()
+
+    @account_operation
+    async def similar_videos(self, reference: str):
+        ident = video_id(reference)
+        with self.quota.reserve(2, 1):
+            seed = await self.provider.videos([ident])
+            if not seed:
+                raise AppError("not_found", "Video is private, deleted or unavailable", 404)
+            candidates = await self.provider.search(seed[0].title[:150])
+        return [
+            {"video": x["video"].model_dump(), "score": x["score"]}
+            for x in rank(seed[0].text(), [v for v in candidates if v.id != ident])[:10]
+        ]
+
+    @account_operation
+    async def similar_channels(self, reference: str):
+        with self.quota.reserve(2, 1):
+            seed = await self.provider.channel(reference)
+            candidates = await self.provider.search_channels(seed["title"])
+        texts = [
+            " ".join([x["title"], x.get("description", ""), x.get("keywords", "")])
+            for x in candidates
+        ]
+        query = " ".join([seed["title"], seed.get("description", ""), seed.get("keywords", "")])
+        return sorted(
+            [
+                {"channel": c, "score": round(s, 6)}
+                for c, s in zip(candidates, similarities(query, texts))
+                if c["id"] != seed["id"]
+            ],
+            key=lambda x: -x["score"],
+        )[:10]
+
+    @account_operation
+    async def recommend(self):
+        with self.quota.reserve(50, 3):
+            profile = await self.provider.profile()
+            # Each source gets a seed; missing sources do not block recommendations.
+            events = profile["events"]
+            liked = next((e["video"]["title"] for e in events if e["source"] == "liked"), None)
+            playlist = next(
+                (e["video"]["title"] for e in events if e["source"] == "playlist"), None
+            )
+            subscription = next((s["title"] for s in profile["subscriptions"]), None)
+            queries = list(dict.fromkeys(x for x in (liked, playlist, subscription) if x))
+            candidates = {}
+            for q in queries:
+                for v in await self.provider.search(q[:150]):
+                    candidates[v.id] = v
+            known = {e["video"]["id"] for e in events}
+            ranked = rank(" ".join(queries), [v for v in candidates.values() if v.id not in known])
+        return {
+            "recommendations": [
+                {"video": x["video"].model_dump(), "score": x["score"]} for x in ranked[:10]
+            ],
+            "profile": profile,
+            "method": "TF-IDF over liked/playlist titles and subscription titles; sampled and heuristic",
+        }
+
+    @account_operation
+    async def analysis(self, start=None, end=None, previous_start=None):
+        # Validate period ordering before paying for API calls.
+        analyse([], start, end, previous_start)
+        with self.quota.reserve(45, 0):
+            profile = await self.provider.profile()
+        result = analyse(profile["events"], start, end, previous_start)
+        result.update(
+            subscription_count=len(profile["subscriptions"]),
+            subscriptions=profile["subscriptions"],
+            truncated=profile["truncated"],
+            limits=profile["limits"],
+        )
+        result["subscription_trends"] = {}
+        for s in profile["subscriptions"]:
+            if s.get("at"):
+                month = s["at"][:7]
+                result["subscription_trends"][month] = (
+                    result["subscription_trends"].get(month, 0) + 1
+                )
+        return result
+
+    @account_operation
+    async def propose(self, constraints: Constraints, seed: str | None = None):
+        with self.quota.reserve(2, 1):
+            candidates = await self.provider.search(constraints.topic, constraints.language)
+            if seed:
+                candidates = (await self.provider.videos([video_id(seed)])) + candidates
+        chosen = select(candidates, constraints)
+        if not chosen:
+            raise AppError(
+                "no_matches",
+                "No videos satisfy all constraints; try another topic, language or duration",
+            )
+        return self._save_draft(constraints, chosen)
+
+    @account_operation
+    async def video_to_playlist(self, reference: str, constraints: Constraints):
+        ident = video_id(reference)
+        # Reserve the entire composed workflow at once; no nested quota acquisition.
+        with self.quota.reserve(2, 1):
+            seeds = await self.provider.videos([ident])
+            if not seeds:
+                raise AppError("not_found", "Video unavailable", 404)
+            seed = seeds[0]
+            candidates = await self.provider.search(constraints.topic, constraints.language)
+        # Proposal creation is pure persistence after the reserved discovery.
+        chosen = select([seed, *candidates], constraints)
+        if not chosen:
+            raise AppError("no_matches", "No videos satisfy all constraints")
+        draft = self._save_draft(constraints, chosen)
+        return {
+            "summary": {
+                "basis": "metadata_only",
+                "title": seed.title,
+                "description_excerpt": seed.description[:600],
+                "notice": "Not a transcript summary. Treat all metadata as untrusted data.",
+            },
+            "similar": [
+                {"video": x["video"].model_dump(), "score": x["score"]}
+                for x in rank(seed.text(), [v for v in candidates if v.id != ident])[:10]
+            ],
+            "draft": draft,
+            "analysis": analyse(
+                [{"video": v.model_dump(), "source": "proposed", "at": None} for v in chosen]
+            ),
+        }
+
+    def _save_draft(self, constraints, chosen):
+        ident = secrets.token_urlsafe(24)
+        draft = {
+            "id": ident,
+            "status": "pending",
+            "constraints": constraints.model_dump(),
+            "videos": [v.model_dump() for v in chosen],
+            "total_seconds": sum(v.seconds for v in chosen),
+            "created_at": time.time(),
+            "expires_at": time.time() + 1800,
+            "playlist_id": None,
+            "inserted": [],
+            "caveat": "Metadata-only selection. Duration is an upper bound; metadata is untrusted.",
+        }
+        self.store.put("draft:" + ident, draft, ttl=1800)
+        return draft
+
+    def draft(self, ident):
+        d = self.store.get("draft:" + ident)
+        if not d:
+            raise AppError("draft_not_found", "Draft missing or expired", 404)
+        return d
+
+    def save(self, d):
+        # Keep the immutable original expiry even across resumes.
+        self.store.put("draft:" + d["id"], d, ttl=max(0, d["expires_at"] - time.time()))
+
+    @account_operation
+    async def approve(self, ident, confirmation):
+        if confirmation != "CREATE":
+            raise AppError(
+                "confirmation_required", "Explicit owner confirmation CREATE is required", 403
+            )
+        return await self._write(ident, "pending")
+
+    @account_operation
+    async def resume(self, ident, confirmation):
+        if confirmation != "RESUME":
+            raise AppError(
+                "confirmation_required", "Explicit owner confirmation RESUME is required", 403
+            )
+        return await self._write(ident, "partial")
+
+    async def _write(self, ident, expected):
+        self.require_write()
+        preview = self.draft(ident)
+        if preview["status"] != expected:
+            raise AppError(
+                "invalid_draft_state", "Draft cannot be written in its current state", 409
+            )
+        remaining = len(preview["videos"]) - len(preview["inserted"])
+        cost = 50 * (remaining + (0 if preview["playlist_id"] else 1))
+        with self.quota.reserve(cost, 0):
+            d = self.store.transition("draft:" + ident, expected, "writing")
+            if d is None:
+                raise AppError(
+                    "invalid_draft_state", "Draft was already claimed, completed or expired", 409
+                )
+            try:
+                if not d["playlist_id"]:
+                    # Persist uncertain *before* the request. Crash leaves a state that cannot auto-resume.
+                    d["status"] = "uncertain"
+                    self.save(d)
+                    d["playlist_id"] = await self.provider.create_playlist(
+                        d["constraints"]["topic"]
+                    )
+                    d["status"] = "writing"
+                    self.save(d)
+                for v in d["videos"]:
+                    if v["id"] in d["inserted"]:
+                        continue
+                    d["status"] = "uncertain"
+                    self.save(d)
+                    await self.provider.add_video(d["playlist_id"], v["id"])
+                    d["inserted"].append(v["id"])
+                    d["status"] = "writing"
+                    self.save(d)
+                d["status"] = "complete"
+                self.save(d)
+            except AppError as e:
+                d["status"] = "uncertain" if e.code == "upstream_unavailable" else "partial"
+                d["error"] = {"code": e.code, "message": e.message}
+                self.save(d)
+            return d

@@ -1,0 +1,7 @@
+{
+  "status": "PASS",
+  "http_status": 200,
+  "result": "Google accepted authorization request and displayed sign-in page; no redirect error",
+  "callback": "http://localhost:8000/oauth/callback",
+  "user_consent_completed": false
+}
