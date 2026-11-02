@@ -1,8 +1,14 @@
 # YouTube Intelligence — Google-connected FastAPI + MCP
 
-Version **1.1.0**. The application uses the **official YouTube Data API v3 exclusively**. There is no demo provider, runtime demo mode, fabricated application result or redirect fallback. Synthetic data exists only in isolated automated tests.
+Version **1.2.0**. The application uses the **official YouTube Data API v3 exclusively**. There is no demo provider, runtime demo mode, fabricated application result or redirect fallback. Synthetic data exists only in isolated automated tests.
 
 This private ZIP includes a configured `.env` for Google project **dark-smile**, as requested. `.gitignore` excludes `.env`, client-secret JSON files and local data from Git. Your Google API key is `YT_YOUTUBE_API_KEY`; `YT_API_KEY` is a separate generated credential for your own FastAPI/MCP server. Never confuse the two.
+
+## Deploy on Render and use with Claude
+
+**Start with [docs/DEPLOY_RENDER.md](docs/DEPLOY_RENDER.md).** This is the hosted deployment path: push source to GitHub, keep Render's Docker runtime, import the private environment values, remove the old localhost callback from Render settings, register the hosted callback with Google, and add the hosted `/mcp/` URL plus `Authorization: Bearer <YT_API_KEY>` in Claude.
+
+The app now supports **Neon PostgreSQL**, including pooled URLs, encrypted persistence, atomic quota reservations and draft claims. No persistent Render disk is needed. Render's public hostname and HTTPS callback are derived from `RENDER_EXTERNAL_URL`; Docker honors `PORT`. Configured database failures never fall back to a local file.
 
 ## Start the application
 
@@ -40,7 +46,7 @@ Use `localhost` consistently, not `127.0.0.1`, during the browser sign-in flow. 
 2. Public similar-video/channel discovery and constrained previews use the configured Google API key. Try a real video URL such as `https://www.youtube.com/watch?v=rfscVS0vtbw`, or channel `@freecodecamp`.
 3. For personal recommendations and engagement analysis, click **Connect Google (read)** and complete Google's sign-in/consent screen.
 4. For playlist creation, click **Enable playlist writes** and approve the stronger Google consent. Then build/review a fresh preview and click **Create private playlist**. Scope authorization does not approve a particular playlist; each exact draft needs confirmation.
-5. Drafts expire in 30 minutes. Known rejected writes can be explicitly resumed; uncertain outcomes never auto-retry. Stop the server with Ctrl+C. Encrypted SQLite persists across restarts.
+5. Drafts expire in 30 minutes. Known rejected writes can be explicitly resumed; uncertain outcomes never auto-retry. Stop the server with Ctrl+C. Encrypted database records persist across restarts.
 
 Successful Google reconnection or scope escalation clears cached data and existing drafts, preventing one account's preview from being written into another. Connect with the desired scope before proposing your final playlist.
 
@@ -54,7 +60,7 @@ python -m ruff check src tests scripts
 python -m ruff format --check src tests scripts
 ```
 
-The current verification run: **71 tests passed**, zero failures, **91.73% Python coverage**. Ordinary tests are offline and never use your credentials. MCP system tests exercise FR1–FR5 over real loopback HTTP with test-only injected fixtures. See [testing](docs/TESTING.md).
+See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the latest complete SQLite/PostgreSQL and cloud regression results. Ordinary tests are offline and never use your credentials. MCP system tests exercise FR1–FR5 over real loopback HTTP with test-only injected fixtures. See [testing](docs/TESTING.md).
 
 Live public checks, using your configured Google project (maximum 10 general units and 3 searches per invocation, no writes):
 
@@ -132,7 +138,7 @@ For other phrasing, an existing MCP AI client translates the request into struct
 
 ## Architecture and limits
 
-Modular SOLID design: immutable pure domain models/algorithms, provider protocol, Google adapter, OAuth service, encrypted SQLite repository, quota reservations, application orchestration, thin FastAPI/MCP transports. No paid embeddings or paid LLM dependency; TF-IDF runs locally.
+Modular SOLID design: immutable pure domain models/algorithms, provider protocol, Google adapter, OAuth service, encrypted SQLAlchemy repository (PostgreSQL/SQLite), quota reservations, application orchestration, thin FastAPI/MCP transports. No paid embeddings or paid LLM dependency; TF-IDF runs locally.
 
 - Similarity is a metadata heuristic, not a verified quality ranking or an understanding of the full video.
 - Summaries use title/description metadata only, never pretend transcripts.
@@ -140,10 +146,14 @@ Modular SOLID design: immutable pure domain models/algorithms, provider protocol
 - Requested language requires an exact declared audio/default metadata match; unknown values are excluded. A null language imposes no language filter.
 - Discovery is bounded to 50 video candidates or 25 channels. Profile sample caps: 100 likes, 100 subscriptions, 10 playlists × 100 items; truncation is disclosed.
 - No watch history. Playlist-add dates drive dated engagement comparisons. Liked dates are unavailable, publication dates are not substituted. Subscription trends are separate. Statistics use UTC, with explicit offsets converted correctly.
-- One local owner, one Google account and one running application process. All app instances must share a database for quota accounting. The ledger cannot see unrelated software using the same Google project.
+- One owner, one Google account and one running application process. All app instances must share a database for quota accounting. The ledger cannot see unrelated software using the same Google project.
 - No private-data or write fallback to API-key-only access. A connected account with expired/revoked OAuth must reauthorize.
 - Google Testing refresh tokens can expire; sign in again when requested. Real writes require a YouTube channel and owner confirmation.
 
 REST docs: **http://localhost:8000/docs**. Click **Authorize** and enter the relevant API/owner key without `Bearer`; middleware enforces roles. See [architecture/API](docs/ARCHITECTURE.md), [Google setup](docs/GOOGLE_SETUP.md), [free deployment](docs/DEPLOYMENT.md) and [security](docs/SECURITY.md).
 
 The ZIP deliberately contains your private `.env`; Git ignores do not encrypt files or remove secrets from an archive. Keep this configured ZIP private. Project code is MIT licensed; it is not affiliated with Google or YouTube.
+
+### Owner key after Google sign-in
+
+Google authorization and local owner authentication are separate. Version 1.1.1 opens Google authorization in a separate tab, preserving the owner key in your original tab. After Google connects, close its tab and return to the original owner page. A refreshed/new owner page needs `YT_OWNER_KEY` entered again, without surrounding quotes. Missing/incorrect keys now show an actionable message. No owner key is saved to browser storage.

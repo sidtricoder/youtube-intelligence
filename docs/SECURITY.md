@@ -15,3 +15,11 @@ Owner writes require an Authorization header; CORS is disabled and cross-origin 
 Uncertain remote writes never auto-retry. Inspect your account for a possible empty/partial playlist after a timeout/crash. The app does not delete remote playlists or silently relax constraints. Report security problems privately to your project maintainer; do not include tokens or real user data in reports.
 
 For this private handoff, the user explicitly requested the configured `.env` inside the ZIP. Git excludes it; that does not protect the ZIP itself. No source file, fixture or test report contains the supplied credential values. The application uses the Google API key directly for permitted public reads and never as an OAuth/write fallback.
+
+## Cloud persistence
+
+With DATABASE_URL configured, data is stored in PostgreSQL schema `ytintel`; without any database URL, explicit local use retains SQLite. A configured PostgreSQL failure never silently switches storage. The runtime prefers DATABASE_URL_POOLED and keeps supplied TLS/channel-binding parameters. SQLAlchemy hides SQL parameters and DSNs are SecretStr settings; database errors return safe messages. Google tokens and records remain Fernet-encrypted using the unchanged YT_ENCRYPTION_KEY.
+
+PostgreSQL uses transaction-level, schema-specific advisory locks (not session locks), so atomic records/quota operations work through Neon transaction pooling. This is a single-owner design, with serialized short repository transactions. Keep one app process/instance; cross-process Google account switching is not a supported multi-user architecture.
+
+On Render, the public HTTPS origin is derived from RENDER_EXTERNAL_URL unless explicitly configured. Callback mismatches fail validation. Only loopback and the configured public MCP hostname/origin are accepted by the SDK. Render proxy headers are trusted on its managed ingress; outside Render, trust defaults to loopback and can be explicitly configured with FORWARDED_ALLOW_IPS.

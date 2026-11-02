@@ -27,8 +27,8 @@
       "name": "FR5 live constrained playlist preview (no write)",
       "status": "PASS",
       "details": {
-        "preview_videos": 28,
-        "total_seconds": 3513,
+        "preview_videos": 24,
+        "total_seconds": 3506,
         "status": "pending"
       }
     },

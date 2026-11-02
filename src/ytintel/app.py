@@ -35,7 +35,11 @@ class RequestText(BaseModel):
 
 def create_app(settings: Settings | None = None, *, provider: Provider | None = None):
     s = settings or Settings()
-    store = Store(s.db_path, s.encryption_key)
+    store = (
+        Store.from_url(s.database_connection, s.encryption_key)
+        if s.database_connection
+        else Store(s.db_path, s.encryption_key)
+    )
     client = httpx.AsyncClient(timeout=20, follow_redirects=False)
     oauth = OAuth(store, client, s.google_client_id, s.google_client_secret, s.redirect_uri)
     provider = provider or GoogleProvider(
@@ -48,7 +52,7 @@ def create_app(settings: Settings | None = None, *, provider: Provider | None = 
         oauth.require_write,
         account_lock=oauth.account_lock,
     )
-    mcp = build_mcp(service)
+    mcp = build_mcp(service, s.public_base_url)
     mcp_app = mcp.streamable_http_app()
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -58,10 +62,11 @@ def create_app(settings: Settings | None = None, *, provider: Provider | None = 
         async with mcp.session_manager.run():
             yield
         await client.aclose()
+        store.close()
 
     app = FastAPI(
         title="YouTube Intelligence",
-        version="1.1.0",
+        version="1.2.0",
         lifespan=lifespan,
         dependencies=[Depends(HTTPBearer(auto_error=False))],
     )
@@ -190,7 +195,7 @@ def create_app(settings: Settings | None = None, *, provider: Provider | None = 
     ):
         await oauth.exchange(code, state, request.cookies.get("yt_oauth_binding", ""))
         response = HTMLResponse(
-            '<p>Google connected. Return to the owner tab.</p><a href="/">Owner page</a>'
+            "<p>Google connected. Close this tab and return to your original owner tab to continue.</p>"
         )
         response.delete_cookie("yt_oauth_binding", path="/oauth/callback")
         return response

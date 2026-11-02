@@ -26,6 +26,8 @@ async def check(output: Path):
         settings = configured.model_copy(
             update={
                 "db_path": str(Path(directory) / "live.db"),
+                "database_url": None,
+                "database_url_pooled": None,
                 "units_per_day": 10,
                 "searches_per_day": 3,
             }
@@ -84,7 +86,7 @@ async def check(output: Path):
             url, state, binding = app.state.oauth.start(False)
             query = parse_qs(urlparse(url).query)
             assert query["client_id"] == [settings.google_client_id]
-            assert query["redirect_uri"] == ["http://localhost:8000/oauth/callback"]
+            assert query["redirect_uri"] == [settings.redirect_uri]
             assert app.state.oauth.consume_state(state, binding)
             return {
                 "redirect_uri": query["redirect_uri"][0],

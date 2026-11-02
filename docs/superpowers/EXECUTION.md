@@ -29,3 +29,16 @@ Deferred minors: none identified by the independent review. Remaining environmen
 - Public API-key traffic uses X-Goog-Api-Key, never URL parameters. Private data and writes require OAuth.
 - New regressions first failed, then passed. Full Python suite: 71 passed, no failures. Chromium workflow passed with test-only fixtures. Six bounded live checks passed.
 - Independent follow-up review found no important security/correctness issues. Actual owner sign-in/consent and remote playlist writes remain unexecuted.
+
+## Render + Neon v1.2 — 2026-11-03
+
+- Replaced SQLite-specific persistence/SQL quota coupling with SQLAlchemy repository operations supporting PostgreSQL and SQLite.
+- Kept the encrypted record format and existing local table names; PostgreSQL uses schema ytintel and transaction-level advisory locks compatible with transaction pooling.
+- Added real database URL secret fields, pooled preference and fail-closed configuration. No database/URI failure fallback.
+- Added Render public-origin/callback validation, remote MCP hostname allowlist, runtime PORT handling and trusted proxy behavior.
+- Kept separate-tab Google sign-in and owner credential isolation.
+- Added Render Blueprint, exact deployment/Claude guide, PostgreSQL CI service and disposable-schema tests.
+- Direct TCP to Neon was unavailable in this environment; a test-only TLS WebSocket transport allowed the actual psycopg driver and full PostgreSQL suite to execute against real Neon. Production DSNs/TLS settings were preserved; the test transport is not shipped.
+- Independent review found the missing automatic Render proxy trust setting; fixed and verified with a reverse-proxy Origin regression. No remaining important review findings.
+- Added browser-fixture isolation from exported database credentials and safe SecretStr representation for PostgreSQL test connection values.
+- Final results: docs/LIVE_NEON_VERIFICATION.json. No live YouTube account writes, repository push or Render publication performed.

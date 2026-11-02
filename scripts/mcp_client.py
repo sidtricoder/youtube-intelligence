@@ -15,7 +15,9 @@ async def main():
     async with httpx.AsyncClient(
         headers={"Authorization": "Bearer " + settings.api_key}, timeout=30
     ) as client:
-        async with streamable_http_client("http://localhost:8000/mcp/", http_client=client) as (
+        async with streamable_http_client(
+            (settings.public_base_url or "http://localhost:8000") + "/mcp/", http_client=client
+        ) as (
             read,
             write,
             _,

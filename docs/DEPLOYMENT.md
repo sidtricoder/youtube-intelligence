@@ -1,10 +1,12 @@
-# Free deployment and operation
+# Deployment
+
+For the complete Render Free + Neon + Claude deployment, follow [DEPLOY_RENDER.md](DEPLOY_RENDER.md). Version 1.2 implements persistent PostgreSQL storage; a paid Render disk is not required.
 
 ## Recommended: your existing laptop or desktop
 
 Follow README's Windows/Linux instructions. The server binds **127.0.0.1:8000**, so it is accessible only on that computer. Software and metadata scoring require no paid subscription. Real Google API use is constrained to your project's free quota; there is no paid API-key dependency. Your existing internet/electricity/hardware costs still apply.
 
-This is a complete deployment, not just a development screenshot: encrypted SQLite persists drafts, tokens, cache and quota; the server can be stopped/restarted without losing them. Keep one process. Do not use uvicorn `--reload` for a long-running deployment. For automatic start, use Windows Task Scheduler (run the full path to `.venv\Scripts\python.exe -m ytintel` with project folder as working directory) or your OS service manager with the project folder as WorkingDirectory. Do not put keys in command-line arguments.
+This is a complete deployment, not just a development screenshot: the configured encrypted database persists drafts, tokens, cache and quota; the server can be stopped/restarted without losing them. Keep one process. Do not use uvicorn `--reload` for a long-running deployment. For automatic start, use Windows Task Scheduler (run the full path to `.venv\Scripts\python.exe -m ytintel` with project folder as working directory) or your OS service manager with the project folder as WorkingDirectory. Do not put keys in command-line arguments.
 
 ## Optional: Docker Engine + Compose
 

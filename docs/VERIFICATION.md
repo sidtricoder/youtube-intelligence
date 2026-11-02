@@ -1,52 +1,40 @@
-# Verification record — 2026-11-03 — Google-only v1.1
+# Verification — v1.2 Render + Neon
 
-## Latest results
+This version implements actual PostgreSQL persistence, not just a DATABASE_URL setting around a SQLite-only application. The supplied direct and pooled URLs are present only in the private `.env`. Runtime prefers the pooled URL and preserves its TLS/channel-binding options. A failed configured database never falls back to SQLite.
 
-| Check | Result |
-|---|---|
-| Complete offline Python suite | **71 passed, 0 failed** |
-| Python statement coverage | **91.73%** (798 statements; 66 unexercised), threshold 85% |
-| Ruff lint / format | Passed; 30 Python files formatted |
-| MCP system tests | FR1–FR5 through real TCP/Streamable HTTP using isolated test fixtures |
-| Chromium owner interface | Discovery, preview, cancel confirmation, confirm synthetic test write, replay-disabled UI, mobile viewport; no JavaScript errors |
-| Live Google public suite | **6 passed, 0 failed** |
-| Live FR1 | 10 ranked similar-video candidates returned |
-| Live FR2 | 10 ranked similar-channel candidates returned |
-| Live FR5 preview | 24 real candidates selected; total 3,506 seconds ≤ 3,600 seconds, every video ≤ 1,200 seconds; status pending |
-| Google OAuth redirect readiness | **Passed**: HTTP 200 sign-in page, no redirect error for `http://localhost:8000/oauth/callback` |
-| Installed-package / live MCP smoke | Google-only wheel installed; bundled owner page, server entry point and real MCP client returned a pending Google-backed preview |
-| Independent review | No important security or correctness findings in v1.1 |
+## Executed checks
 
-The six-check public suite reserved a maximum of 10 general units and 3 searches; actual usage was 5 general units and 3 searches, with **zero playlist writes**. An initial direct metadata smoke and installed-MCP smoke were separate small read-only checks. OAuth endpoint readiness requests do not call the YouTube Data API.
+- Full Python suite includes SQLite, domain/provider/service/API/MCP, cloud configuration and seven real PostgreSQL contract tests.
+- Real Neon driver tests cover encrypted persistence across reopened engines, concurrent single-use records, concurrent draft claims, quota reservations across independent repository instances, refunds, rollback, expiry and literal-prefix deletion.
+- Tests use randomly named `ytintel_test_*` schemas and remove their own schemas afterward. They do not read or change account data or unrelated tables.
+- Chromium checks cover the separate-tab OAuth owner-key fix, actionable missing/incorrect owner-key errors, discovery, preview, cancel/confirm and replay-disabled UI.
+- Cloud tests verify the configured remote MCP hostname, rejected foreign hostname, exact HTTPS callback derivation, fail-closed callback mismatch, Render port binding and correct HTTPS Origin handling through Render's proxy.
+- A dedicated isolation regression prevents browser fixtures from using an exported production DATABASE_URL. Ordinary tests clear production application environment variables and use `_env_file=None` or synthetic configuration; explicit TEST_DATABASE_URL is retained only for PostgreSQL integration tests.
+- Lint/format checks and wheel packaging checks passed. The wheel includes PostgreSQL dependencies, the cloud entry point and the owner interface; it contains no demo provider.
+- Independent review found one Render proxy-header issue; it was fixed and regression-tested. Follow-up review found no important remaining blockers.
 
-Detailed safe machine-readable reports: LIVE_CHECKS.json, OAUTH_READINESS.json, INSTALLED_CHECK.json. Reports deliberately exclude credential values, authorization URLs with transient state, headers and raw upstream error bodies.
+**Final result: 93 passed, 0 failed, 0 skipped; 92.14% Python coverage.** All seven PostgreSQL tests executed against real Neon. Machine-readable results are recorded in LIVE_NEON_VERIFICATION.json.
 
-## Blocked pending owner sign-in, not test failures
+## Live transport qualification
 
-- Live FR3 recommendations from the user's likes, playlists and subscriptions.
-- Live FR4 analysis of the user's account data.
-- Real YouTube playlist creation/insertion, which also requires explicit owner confirmation of the exact draft.
+This execution environment cannot directly resolve/connect to PostgreSQL TCP endpoints. The provided Neon credentials first passed an HTTPS SELECT 1. The full PostgreSQL tests then used **the actual psycopg/SQLAlchemy driver against real Neon**, carried through an ephemeral test-only TLS WebSocket bridge supported by Neon. This permitted real PostgreSQL transactions and concurrent sessions, rather than mocking the database. The bridge is not part of the delivered application, not a production fallback and not a deployment requirement.
 
-The user registered the fixed callback and Google accepted it. That checks the authorization request and redirect configuration, **not** completion of consent or validation of a token exchange using the client secret. OAuth client credentials and an API key cannot substitute for the user's consent grant. No redirect fallback or private/write API-key fallback was added.
+Production uses standard psycopg PostgreSQL over TLS with the original supplied connection parameters. Direct Render-to-Neon TCP connectivity and the Render container itself were not executed here because this environment has no Render deployment/account session or Docker daemon. Docker/Blueprint configuration and the actual repository SQL have been verified separately.
 
-## Environment and commands
+## Google and account operations
 
-Linux / Python 3.12.14. Commands:
+The prior six public YouTube checks and localhost OAuth authorization-request readiness passed. Real Google owner sign-in must be completed on the deployed HTTPS owner page after registering that exact hosted callback. No remote YouTube playlist was created or modified during verification. Google client credentials alone do not grant user consent.
+
+## Repeating checks
+
+Ordinary tests:
 
 ```bash
-python -m pytest --cov=ytintel --cov-report=term-missing --cov-fail-under=85 -q
+pytest --cov=ytintel --cov-fail-under=85
 ruff check src tests scripts
 ruff format --check src tests scripts
-python scripts/check_google.py
-python scripts/check_oauth.py
 ```
 
-Chromium smoke used Playwright 1.62.1 with a local Chromium 153 executable because this environment's managed-browser download was unavailable. The delivered browser script also supports normal Playwright-managed Chromium, as used in CI. Synthetic results are injected by `tests/browser_server.py`; there is no production mode that selects them.
+Without TEST_DATABASE_URL, the seven PostgreSQL tests explicitly skip. GitHub CI includes a dedicated PostgreSQL 17 service and runs them without real user credentials. With an explicit test database URL, every PostgreSQL test creates a disposable schema. `scripts/check_database.py` provides an optional persistence probe for a configured database, also using a disposable schema. Do not enable verbose/debug logging with real credentials.
 
-One harmless Starlette/httpx TestClient deprecation warning remains; tests still pass. Coverage is a Python statement measure, not a guarantee of all real-world states.
-
-Docker daemon execution, Windows execution and GitHub-hosted workflows were not executed in this environment. Their configuration is included, not claimed as remotely deployed. No remote account playlist was created or modified.
-
-## Private handoff
-
-The user explicitly requested that the ZIP include its configured `.env`. It contains the supplied project credentials and generated local application keys. `.gitignore` excludes it from Git; the archive itself must remain private. Source/tests/reports contain no actual credential values. The original OAuth JSON is not duplicated because its relevant fields have been imported into `.env`.
+One Starlette/httpx TestClient deprecation warning remains with the tested pins. It does not prevent tests from passing.

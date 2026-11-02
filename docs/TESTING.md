@@ -44,3 +44,13 @@ Recorded execution results are in VERIFICATION.md. Offline provider tests establ
 A harmless Starlette deprecation warning about its current httpx TestClient integration may appear with the tested package versions; the test suite still executes. The MCP client uses the current nondeprecated Streamable HTTP interface for the pinned v1 SDK. Upgrading to the newer MCP v2 API is a separate compatibility change, not an automatic dependency upgrade.
 
 Google-only v1.1 regressions are in `tests/test_google_only.py`: runtime provider selection, key-only public reads, no private/write fallback, expired-token behavior, redacted configuration errors and JSON credential import. The current live public result is in LIVE_CHECKS.json; Google accepted the registered redirect and displayed sign-in (OAUTH_READINESS.json). Actual user consent and private account writes remain unexecuted.
+
+## PostgreSQL and Render v1.2
+
+`tests/test_postgres.py` contains seven opt-in tests against a real PostgreSQL endpoint: encrypted reopen, atomic take, atomic draft claims, quota across independent repository instances, unused-reservation refunds, transaction rollback and expiry/upsert/prefix behavior. Set `TEST_DATABASE_URL` to a dedicated test connection before pytest. Each test creates a randomly named `ytintel_test_*` schema and drops only its own schema afterward. No account records are touched.
+
+GitHub CI has a PostgreSQL 17 service and runs these tests without real credentials. An ordinary offline run skips those seven tests explicitly; it does not substitute SQLite and claim to have tested PostgreSQL.
+
+`tests/test_cloud.py` verifies DATABASE_URL secret handling, pooled selection, fail-closed invalid configuration, Render-required PostgreSQL, exact HTTPS callback derivation, rejected callback mismatches, runtime port/proxy settings, accepted configured MCP Host and rejected foreign Host, and owner Origin checks through the reverse-proxy middleware. The existing Chromium regression still checks separate-tab Google sign-in and owner-key preservation.
+
+`scripts/check_database.py` is an optional disposable-schema persistence check for your configured database. It prints only safe status fields, not a connection URL/password.

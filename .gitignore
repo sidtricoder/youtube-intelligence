@@ -19,3 +19,6 @@ test-results/
 client_secret*.json
 credentials*.json
 .env-write-*
+
+# Hosted database checks must never commit private connection files
+*.pgpass

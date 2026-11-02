@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: youtube-intelligence
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_URL_POOLED
+        sync: false
+      - key: YT_ENCRYPTION_KEY
+        sync: false
+      - key: YT_API_KEY
+        sync: false
+      - key: YT_OWNER_KEY
+        sync: false
+      - key: YT_YOUTUBE_API_KEY
+        sync: false
+      - key: YT_GOOGLE_CLIENT_ID
+        sync: false
+      - key: YT_GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: YT_GOOGLE_PROJECT_ID
+        value: dark-smile
+      - key: FORWARDED_ALLOW_IPS
+        value: '*'

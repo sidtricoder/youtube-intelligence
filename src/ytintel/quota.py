@@ -32,36 +32,19 @@ class Quota:
     @contextmanager
     def reserve(self, units, searches):
         day = self.day()
-        with self.store.tx() as db:
-            db.execute("INSERT OR IGNORE INTO quota VALUES (?,0,0)", (day,))
-            u, s = db.execute("SELECT units,searches FROM quota WHERE day=?", (day,)).fetchone()
-            if u + units > self.units or s + searches > self.searches:
-                raise AppError(
-                    "quota_exceeded",
-                    "Insufficient quota for the entire workflow; no API call made",
-                    429,
-                )
-            db.execute(
-                "UPDATE quota SET units=units+?,searches=searches+? WHERE day=?",
-                (units, searches, day),
-            )
+        self.store.reserve_quota(day, units, searches, self.units, self.searches)
         ticket = Ticket(units, searches)
         token = active_ticket.set(ticket)
         try:
             yield ticket
         finally:
             active_ticket.reset(token)
-            with self.store.tx() as db:
-                db.execute(
-                    "UPDATE quota SET units=units-?,searches=searches-? WHERE day=?",
-                    (units - ticket.used_units, searches - ticket.used_searches, day),
-                )
+            self.store.release_quota(
+                day, units - ticket.used_units, searches - ticket.used_searches
+            )
 
     def status(self):
-        with self.store.tx() as db:
-            row = db.execute(
-                "SELECT units,searches FROM quota WHERE day=?", (self.day(),)
-            ).fetchone() or (0, 0)
+        row = self.store.quota_usage(self.day())
         return dict(
             day=self.day(),
             units_used=row[0],

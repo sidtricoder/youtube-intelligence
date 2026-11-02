@@ -8,7 +8,7 @@
 | `providers/base.py` | Narrow provider protocol for reads and playlist operations |
 | `providers/google.py` | Official Google HTTP adapter, response normalization and bounded pagination |
 | `tests/fakes.py` | Test-only synthetic adapter, never selected by production |
-| `store.py` | Encrypted JSON records, TTL and atomic state transitions |
+| `store.py` | SQLAlchemy encrypted JSON records on PostgreSQL/SQLite, TTL and atomic state transitions |
 | `quota.py` | Project-level transactional daily budget/reservations |
 | `auth.py` | Google OAuth, encrypted token storage, scope escalation and revocation |
 | `service.py` | FR1–FR5 orchestration and state machine |
@@ -54,3 +54,5 @@ All `/api/*` accept the API key or owner key as `Authorization: Bearer ...`; `/o
 Constraints: topic 2–200 characters; total 60–14,400 seconds; maximum individual length 30–7,200 seconds; optional language code (`en`, `hi`, `en-US`, etc.). Live searches exclude duration-zero entries (unavailable/live/unknown). Each selected video must independently satisfy the maximum runtime and language; aggregate runtime never exceeds total. No duplicate video IDs in a draft.
 
 Errors have stable safe codes, including `invalid_input`, `not_found`, `no_matches`, `rate_limited`, `quota_exceeded`, `reauthorization_required`, `channel_required`, `write_scope_required` and `invalid_draft_state`. REST validation returns 422. MCP domain errors return `{error:{code,message}}`; malformed tool schemas are also rejected by the SDK. Rate limit: 60 authenticated HTTP requests/minute per credential role per process; the SDK may use multiple requests for a single client operation. HTTP clients can honor `Retry-After`; this app does not automatically retry Google calls.
+
+PostgreSQL uses a dedicated `ytintel` schema and a schema-specific transaction-level advisory lock. Quota reservations/refunds and record transitions run inside those transactions, including through Neon transaction pooling. SQLite retains BEGIN IMMEDIATE and existing kv/quota table compatibility for explicit local configurations. DATABASE_URL_POOLED is preferred; a configured PostgreSQL failure never selects SQLite.

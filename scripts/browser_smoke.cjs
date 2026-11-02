@@ -27,7 +27,24 @@ async function main() {
     const page=await browser.newPage({viewport:{width:1365,height:1000}});
     const errors=[];page.on('pageerror',e=>errors.push(e.message));
     await page.goto('http://localhost:8000');
+    await page.locator('#propose').click();
+    await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('YT_OWNER_KEY'));
+    await page.locator('#key').fill('incorrect-key');
+    await page.locator('#propose').click();
+    await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('Owner key is missing or incorrect'));
     await page.locator('#key').fill(owner);
+    // OAuth must not navigate away from the owner tab and erase its memory-only credential.
+    await page.route('**/owner/oauth/start?write=false', route=>route.fulfill({
+      status:200,contentType:'application/json',body:JSON.stringify({url:'http://localhost:8000/health'})}));
+    const [oauthTab]=await Promise.all([
+      page.waitForEvent('popup',{timeout:2500}),page.locator('#connect').click()
+    ]);
+    await oauthTab.waitForURL('**/health');
+    assert.equal(await page.locator('#key').inputValue(),owner);
+    assert.equal(page.url(),'http://localhost:8000/');
+    assert.equal(await oauthTab.evaluate(()=>window.opener),null);
+    await oauthTab.close();
+
     await page.locator('#reference').fill('aaaaaaaaaaa');
     await page.locator('#discover').click();
     await page.waitForFunction(()=>document.querySelector('#discovery').textContent.includes('Python'));
@@ -47,7 +64,7 @@ async function main() {
     await page.setViewportSize({width:390,height:844});
     assert(await page.locator('h1').isVisible());
     assert.deepEqual(errors,[]);
-    console.log('PASS: Chromium discovery, preview, cancelled confirmation, owner-approved synthetic test creation, replay-disabled UI, mobile viewport; no JS errors.');
+    console.log('PASS: Chromium OAuth tab/key preservation, missing/incorrect-key guidance, discovery, preview, cancelled confirmation, owner-approved synthetic test creation, replay-disabled UI, mobile viewport; no JS errors.');
   } finally {
     if(browser) await browser.close();
     server.kill();
