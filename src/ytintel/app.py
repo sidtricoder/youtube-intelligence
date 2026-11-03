@@ -76,15 +76,33 @@ def create_app(settings: Settings | None = None, *, provider: Provider | None = 
     @app.middleware("http")
     async def security(request: Request, call_next):
         path = request.url.path
-        public = path in {"/", "/health", "/oauth/callback", "/docs", "/openapi.json", "/redoc"}
+        # /.well-known/* must answer 404, not 401: a 401 on OAuth discovery makes OAuth-capable
+        # clients believe this server requires an OAuth sign-in it does not implement.
+        public = path in {
+            "/",
+            "/health",
+            "/oauth/callback",
+            "/docs",
+            "/openapi.json",
+            "/redoc",
+        } or path.startswith("/.well-known/")
         if not public:
             header = request.headers.get("authorization", "")
             supplied = header.removeprefix("Bearer ") if header.startswith("Bearer ") else ""
             is_owner = secrets.compare_digest(supplied.encode(), s.owner_key.encode())
             is_ai = secrets.compare_digest(supplied.encode(), s.api_key.encode())
-            if path.startswith("/mcp") and not is_ai:
+            # Dedicated URL key: opens /mcp only (never /api or /owner) and only when configured.
+            # The explicit emptiness checks matter: compare_digest("", "") is True.
+            url_key = request.query_params.get("key", "")
+            is_url_key = bool(
+                s.mcp_url_key
+                and url_key
+                and (path == "/mcp" or path.startswith("/mcp/"))
+                and secrets.compare_digest(url_key.encode(), s.mcp_url_key.encode())
+            )
+            if path.startswith("/mcp") and not (is_ai or is_url_key):
                 return JSONResponse({"error": {"code": "unauthorized"}}, 401)
-            if not is_owner and not is_ai:
+            if not (is_owner or is_ai or is_url_key):
                 return JSONResponse({"error": {"code": "unauthorized"}}, 401)
             if path.startswith("/owner/") and not is_owner:
                 return JSONResponse({"error": {"code": "owner_required"}}, 403)

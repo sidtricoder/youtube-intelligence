@@ -19,6 +19,7 @@ In the service's **Environment** page, add/import these variables from the priva
 | `YT_ENCRYPTION_KEY` | Preserve the exact value in your configured `.env` |
 | `YT_API_KEY` | App/MCP credential from `.env` |
 | `YT_OWNER_KEY` | Separate owner credential from `.env` |
+| `YT_MCP_URL_KEY` | New, dedicated key for the Claude connector URL (see section 5). Generate with `python -c "import secrets;print(secrets.token_urlsafe(48))"`. Must differ from `YT_API_KEY` and `YT_OWNER_KEY` |
 | `YT_YOUTUBE_API_KEY` | Google API key from `.env` |
 | `YT_GOOGLE_CLIENT_ID` | Google OAuth client ID from `.env` |
 | `YT_GOOGLE_CLIENT_SECRET` | Google OAuth client secret from `.env` |
@@ -61,10 +62,17 @@ Tokens, drafts, cached data and quota counters are stored encrypted in Neon and 
 In Claude: **Customize → Connectors → Add → Custom → Web**.
 
 - Name: `YouTube Intelligence`
-- Server URL: `https://your-service.onrender.com/mcp/` (include trailing slash).
-- Use fixed-request-header authentication; no MCP OAuth sign-in is required for this server.
-- Request header name: `Authorization`.
-- Request header value: `Bearer ` followed by your **YT_API_KEY** value.
+- Leave the OAuth Client ID / Secret fields empty. This server has no MCP OAuth sign-in.
+
+**Method A (recommended; works when the dialog has no Request headers section).** Set `YT_MCP_URL_KEY` in Render, redeploy, then use this as the Server URL:
+
+```
+https://your-service.onrender.com/mcp/?key=YOUR_YT_MCP_URL_KEY
+```
+
+The key is in the URL, so treat the whole URL as a password: do not paste it into screenshots, chats or commits, and rotate it (change `YT_MCP_URL_KEY` in Render, redeploy, remove and re-add the connector) if it leaks. This key opens `/mcp/` only. It cannot open `/api/*` or the owner page, and it cannot approve or write playlists. Nothing else about the connector requires logging in: Google sign-in happens once, on the owner page.
+
+**Method B (only if your Claude dialog shows Request headers).** Server URL `https://your-service.onrender.com/mcp/`, header name `Authorization`, header value `Bearer ` followed by your **YT_API_KEY**.
 
 Do not give Claude your owner key, Google client secret, database URL or encryption key. The server's Google sign-in is performed on the hosted owner page. It is not an MCP OAuth authorization server for ChatGPT.
 
@@ -91,7 +99,8 @@ Render Free sleeps when idle and may take about a minute to wake. If Claude's in
 | MCP `421 Invalid Host` | Confirm the service's actual HTTPS origin is configured; v1.2 includes the public hostname in its allowlist |
 | `origin_denied` on owner actions | Use the configured HTTPS domain; v1.2 recognizes Render proxy headers |
 | Owner `401` | Enter `YT_OWNER_KEY` in the owner page, without quotes; Google consent does not replace it |
-| Claude unauthorized | Use `YT_API_KEY` in the Authorization request header, not the Google API key |
+| Claude unauthorized | Method A: the URL must end `/mcp/?key=<YT_MCP_URL_KEY>` and the variable must be set in Render (redeploy after adding). Method B: use `YT_API_KEY` in the Authorization header, not the Google API key |
+| Startup error mentioning `YT_MCP_URL_KEY` | It needs at least 32 URL-safe characters (letters, digits, `. _ ~ -`) and must differ from the API and owner keys |
 
 ## Official references
 

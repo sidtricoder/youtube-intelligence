@@ -23,3 +23,13 @@ With DATABASE_URL configured, data is stored in PostgreSQL schema `ytintel`; wit
 PostgreSQL uses transaction-level, schema-specific advisory locks (not session locks), so atomic records/quota operations work through Neon transaction pooling. This is a single-owner design, with serialized short repository transactions. Keep one app process/instance; cross-process Google account switching is not a supported multi-user architecture.
 
 On Render, the public HTTPS origin is derived from RENDER_EXTERNAL_URL unless explicitly configured. Callback mismatches fail validation. Only loopback and the configured public MCP hostname/origin are accepted by the SDK. Render proxy headers are trusted on its managed ingress; outside Render, trust defaults to loopback and can be explicitly configured with FORWARDED_ALLOW_IPS.
+
+## MCP URL key (`YT_MCP_URL_KEY`)
+
+Some MCP clients, including Claude custom connectors, cannot send an `Authorization` header. When `YT_MCP_URL_KEY` is set, `/mcp/?key=<value>` is accepted as an alternative to the bearer API key.
+
+- Disabled unless configured; an empty or missing key never matches.
+- Compared in constant time; at least 32 URL-safe characters; must differ from the API and owner keys.
+- Accepted on `/mcp` only. It never authorizes `/api/*` or `/owner/*`, so it cannot approve drafts or write playlists.
+- A URL is weaker than a header: it can appear in client history, proxy logs and screenshots. The application keeps uvicorn access logs off and sends `Referrer-Policy: no-referrer`, but the platform or the client may still record URLs. Use a dedicated key, never reuse another credential, and rotate by changing the variable and re-adding the connector.
+- `/.well-known/*` answers 404 so OAuth-capable clients do not mistake this server for one that requires OAuth sign-in.

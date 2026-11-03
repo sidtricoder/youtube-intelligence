@@ -1,3 +1,4 @@
+import re
 from urllib.parse import urlparse
 
 from pydantic import AliasChoices, Field, SecretStr, model_validator
@@ -24,6 +25,9 @@ class Settings(BaseSettings):
     encryption_key: str = Field(repr=False)
     api_key: str = Field(repr=False)
     owner_key: str = Field(repr=False)
+    # Optional dedicated credential that lets header-less MCP clients (such as Claude custom
+    # connectors) call /mcp as https://host/mcp/?key=<value>. Empty disables the feature.
+    mcp_url_key: str = Field(default="", repr=False)
     youtube_api_key: str = Field(default="", repr=False)
     google_project_id: str = ""
     google_client_id: str = ""
@@ -41,6 +45,15 @@ class Settings(BaseSettings):
     def validate_configuration(self):
         if min(len(self.api_key), len(self.owner_key)) < 32 or self.api_key == self.owner_key:
             raise ValueError("Use distinct random API and owner keys of at least 32 characters")
+        if self.mcp_url_key:
+            if len(self.mcp_url_key) < 32 or not re.fullmatch(
+                r"[A-Za-z0-9._~-]+", self.mcp_url_key
+            ):
+                raise ValueError(
+                    "YT_MCP_URL_KEY must be at least 32 URL-safe characters (letters, digits, . _ ~ -)"
+                )
+            if self.mcp_url_key in (self.api_key, self.owner_key):
+                raise ValueError("YT_MCP_URL_KEY must differ from the API and owner keys")
         if self.units_per_day < 0 or self.searches_per_day < 0:
             raise ValueError("Quota limits cannot be negative")
         origin = (self.public_base_url or self.render_external_url).rstrip("/")

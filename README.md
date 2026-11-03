@@ -6,7 +6,7 @@ This private ZIP includes a configured `.env` for Google project **dark-smile**,
 
 ## Deploy on Render and use with Claude
 
-**Start with [docs/DEPLOY_RENDER.md](docs/DEPLOY_RENDER.md).** This is the hosted deployment path: push source to GitHub, keep Render's Docker runtime, import the private environment values, remove the old localhost callback from Render settings, register the hosted callback with Google, and add the hosted `/mcp/` URL plus `Authorization: Bearer <YT_API_KEY>` in Claude.
+**Start with [docs/DEPLOY_RENDER.md](docs/DEPLOY_RENDER.md).** This is the hosted deployment path: push source to GitHub, keep Render's Docker runtime, import the private environment values, remove the old localhost callback from Render settings, register the hosted callback with Google, and add the hosted `/mcp/?key=<YT_MCP_URL_KEY>` URL in Claude (or, if your Claude dialog has a Request headers section, the plain `/mcp/` URL plus `Authorization: Bearer <YT_API_KEY>`).
 
 The app now supports **Neon PostgreSQL**, including pooled URLs, encrypted persistence, atomic quota reservations and draft claims. No persistent Render disk is needed. Render's public hostname and HTTPS callback are derived from `RENDER_EXTERNAL_URL`; Docker honors `PORT`. Configured database failures never fall back to a local file.
 
@@ -115,7 +115,7 @@ Typical client configuration (actual schemas vary):
 }
 ```
 
-Replace the example value in private client configuration. A cloud-only AI client cannot reach your laptop's localhost. The included Python MCP client and the browser interface need no paid AI service. The server uses private bearer credentials, not a public multi-user MCP OAuth authorization server.
+Replace the example value in private client configuration. A cloud-only AI client cannot reach your laptop's localhost. The included Python MCP client and the browser interface need no paid AI service. The server uses private credentials (a bearer header, or the optional dedicated `?key=` URL key for clients that cannot send headers), not a public multi-user MCP OAuth authorization server.
 
 | MCP tool | Purpose |
 |---|---|
