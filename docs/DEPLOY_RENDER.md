@@ -95,3 +95,7 @@ Render free instances may sleep and cold-start, and Neon free plans have resourc
 Run one application process/worker per deployment. The launcher explicitly uses one worker; in-process request rate windows require one instance (daily quota and token rotation are database-atomic). Add a distributed rate limiter before horizontal scaling.
 
 For the 2.1.0 scope/optional-duration upgrade and existing-account reconnection steps, see UPGRADE_2_1_0.md.
+
+## Diagnose a rejected tool call
+
+Version 2.3.0 emits JSON stdout logs automatically. Confirm `server.started` reports `2.3.0`, repeat the request once and filter by the error request_id. Inspect `tool.failed`, not just HTTP status: MCP tool failures may travel inside HTTP 200. See [the diagnostics guide](UPGRADE_2_3_0.md). Optional Render process variable: `YT_LOG_LEVEL=INFO`. Keep access logs off and do not turn on HTTP debug logging. No new Google Cloud setting is required.

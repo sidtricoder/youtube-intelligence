@@ -1,13 +1,38 @@
 """MCP registration only; identity comes from the HTTP gate's verified request state."""
 
 import json
+from typing import Annotated
 from urllib.parse import urlparse
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp import Context
 from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import Field
 
 from .domain import Constraints, parse_request
 from .errors import AppError
+from .mcp_observer import ObservedMCP
+from .observability import invalid_input, request_id
+
+Topic = Annotated[
+    str, Field(min_length=2, max_length=200, description="Search topic, 2 to 200 characters.")
+]
+Seconds = Annotated[
+    int | None,
+    Field(
+        default=None,
+        gt=0,
+        strict=True,
+        description="Optional positive whole seconds. Omit for no duration bound; no server duration maximum.",
+    ),
+]
+Language = Annotated[
+    str | None,
+    Field(
+        default=None,
+        pattern=r"^[a-z]{2,3}(-[A-Za-z]{2,4})?$",
+        description="Language code such as en, hi or en-US; never English. Omit for any language. Unknown video language is excluded when set.",
+    ),
+]
 
 PUBLIC_NOTICE = (
     "Not personalised. Sign in for recommendations from your likes, subscriptions "
@@ -18,7 +43,7 @@ PUBLIC_NOTICE = (
 def build_mcp(service_factory, public_base_url="", disconnect=None):
     disconnect_callback = disconnect
     base = public_base_url or "http://localhost:8000"
-    mcp = FastMCP(
+    mcp = ObservedMCP(
         "YouTube Intelligence",
         website_url=base,
         instructions=(
@@ -27,7 +52,7 @@ def build_mcp(service_factory, public_base_url="", disconnect=None):
             "requested at initial sign-in. MCP tools prepare drafts; the server creates playlists "
             "only after the user reviews and confirms each draft at approval_url. Explain that "
             "this link is per-playlist approval, not a second permission request when writes were "
-            "already granted. Duration bounds are optional; never invent a server duration cap."
+            "already granted. Duration bounds are optional; never invent a server duration cap. Use language codes such as en, not English. Never claim a draft or playlist exists unless the tool returns its id and status. If a tool returns error, report its exact code and request_id; do not replace failed YouTube results with invented videos, courses or unrelated web sources."
         ),
         transport_security=TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
@@ -53,9 +78,11 @@ def build_mcp(service_factory, public_base_url="", disconnect=None):
                 result["approval_url"] = base + "/approve/" + result["id"]
             return result
         except AppError as exc:
-            return {"error": {"code": exc.code, "message": exc.message}}
-        except ValueError:
-            return {"error": {"code": "invalid_input", "message": "Invalid input parameters"}}
+            return {
+                "error": {"code": exc.code, "message": exc.message, "request_id": request_id.get()}
+            }
+        except ValueError as exc:
+            return invalid_input(exc)
 
     @mcp.tool()
     async def similar_videos(video: str, ctx: Context) -> dict:
@@ -89,11 +116,11 @@ def build_mcp(service_factory, public_base_url="", disconnect=None):
 
     @mcp.tool()
     async def propose_playlist(
-        topic: str,
+        topic: Topic,
         ctx: Context,
-        total_seconds: int | None = None,
-        max_seconds: int | None = None,
-        language: str | None = None,
+        total_seconds: Seconds = None,
+        max_seconds: Seconds = None,
+        language: Language = None,
     ) -> dict:
         """Stateless public proposal. Durations are optional; omit for no duration bound. No server duration caps. No sign-in. Cannot be approved or created in YouTube."""
 
@@ -121,11 +148,11 @@ def build_mcp(service_factory, public_base_url="", disconnect=None):
     @mcp.tool()
     async def video_to_playlist(
         video: str,
-        topic: str,
+        topic: Topic,
         ctx: Context,
-        total_seconds: int | None = None,
-        max_seconds: int | None = None,
-        language: str | None = None,
+        total_seconds: Seconds = None,
+        max_seconds: Seconds = None,
+        language: Language = None,
     ) -> dict:
         """Public metadata summary, similar videos, stateless proposal and analysis. No sign-in."""
 
@@ -144,11 +171,11 @@ def build_mcp(service_factory, public_base_url="", disconnect=None):
 
     @mcp.tool()
     async def create_playlist_draft(
-        topic: str,
+        topic: Topic,
         ctx: Context,
-        total_seconds: int | None = None,
-        max_seconds: int | None = None,
-        language: str | None = None,
+        total_seconds: Seconds = None,
+        max_seconds: Seconds = None,
+        language: Language = None,
         exclude_saved: bool = True,
     ) -> dict:
         """FR-5. Requires sign-in. Optional duration bounds; omit for unbounded duration. No server duration caps. Preview your own draft; open approval_url for explicit confirmation. Google write permission is requested at initial connection. No write tool."""

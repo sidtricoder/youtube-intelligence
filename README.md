@@ -2,6 +2,8 @@
 
 Discover related YouTube videos and channels publicly, then sign in with your own Google account for recommendations, engagement analysis and reviewed private playlists. The production provider uses the official YouTube Data API v3. Summaries use title/description metadata, not transcripts or claims of watching a video.
 
+For actionable validation errors and structured Render logs, see [the 2.3.0 upgrade guide](docs/UPGRADE_2_3_0.md). Logging works by default; no Google configuration change is needed.
+
 The account consent screen is now an accessible modal dialog in the OAuth browser tab. The home, playlist review, completion and browser error pages share a responsive design. See [the 2.2.0 upgrade steps](docs/UPGRADE_2_2_0.md).
 
 For upfront permissions and unrestricted durations, follow [the 2.1.0 upgrade steps](docs/UPGRADE_2_1_0.md). The earlier Windows/CSP fixes are retained.

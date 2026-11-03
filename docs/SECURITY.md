@@ -58,3 +58,7 @@ ACLs. The functional bootstrap, Fernet and exclusive-create checks run on both C
 ## Browser presentation (2.2.0)
 
 Consent uses a native HTML dialog with CSRF-protected Allow/Cancel form submissions. Escape submits denial; denial consumes the transaction without issuing an authorization code. The only inline executable script is fixed dialog behavior authorized by a per-response CSP nonce. No untrusted metadata enters that script. Form actions retain their exact validated OAuth destination origins. All displayed client names and video metadata are escaped; browser result links encode identifiers. API/MCP errors retain protocol responses rather than HTML. This UI does not change browser-session/token separation, per-user ownership checks or typed playlist approval.
+
+## Operational diagnostics (2.3.0)
+
+Structured application events use server-generated request IDs and allow-listed field names. They exclude identities, raw arguments, metadata, dynamic IDs, client IPs, URL queries, cookies, headers, token values, provider bodies and exception text. SDK protocol/error chatter is suppressed. Unexpected HTTP failures produce a generic correlated 500 rather than a credential-bearing exception dump. Access logging stays disabled. Logs expose aggregate processing/counts to the operator; restrict Render log access and retention. No log event grants authorization or substitutes for token/session verification.

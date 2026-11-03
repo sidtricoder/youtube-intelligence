@@ -12,6 +12,7 @@ from starlette.requests import HTTPConnection
 from starlette.responses import JSONResponse, Response
 
 from .errors import AppError
+from .observability import event
 from .policy import MCP_SCOPE, Tier, required_tier
 
 
@@ -69,6 +70,12 @@ class MCPGate:
         self.windows = windows if windows is not None else defaultdict(deque)
 
     def challenge(self, status=401):
+        event(
+            "auth.challenge",
+            warning=True,
+            status=status,
+            error_code="insufficient_scope" if status == 403 else "authentication_required",
+        )
         header = f'Bearer resource_metadata="{self.issuer}/.well-known/oauth-protected-resource", scope="{MCP_SCOPE}"'
         if status == 403:
             header = f'Bearer error="insufficient_scope", scope="{MCP_SCOPE}"'
@@ -89,6 +96,7 @@ class MCPGate:
         while window and window[0] <= now - 60:
             window.popleft()
         if len(window) >= limit:
+            event("rate_limit.rejected", warning=True, error_code="rate_limited")
             return False
         window.append(now)
         return True
@@ -105,6 +113,7 @@ class MCPGate:
             authenticated = await self.bearer.authenticate(HTTPConnection(scope))
             token = authenticated[1].access_token if authenticated else None
             if token is None:
+                event("auth.token_rejected", warning=True, error_code="invalid_token")
                 return await self.challenge()(scope, receive, send)
             if self.credential_check:
                 try:
@@ -140,6 +149,27 @@ class MCPGate:
                         or isinstance(item.get("id"), (list, dict, bool))
                     ):
                         raise ValueError()
+                for item in items:
+                    method = item["method"]
+                    event(
+                        "mcp.received",
+                        operation=method
+                        if method
+                        in {
+                            "initialize",
+                            "ping",
+                            "tools/call",
+                            "tools/list",
+                            "resources/list",
+                            "resources/read",
+                            "resources/templates/list",
+                            "prompts/list",
+                            "prompts/get",
+                            "notifications/initialized",
+                            "notifications/cancelled",
+                        }
+                        else "unknown",
+                    )
                 protected = any(required_tier(item) == Tier.AUTHENTICATED for item in items)
             except (ValueError, TypeError, UnicodeError):
                 return await JSONResponse({"error": "invalid_jsonrpc"}, 400)(scope, receive, send)
@@ -187,6 +217,7 @@ class MCPGate:
                 return await self.challenge()(scope, receive, send)
             return await JSONResponse({"error": exc.code}, exc.status)(scope, receive, send)
         scope.setdefault("state", {})["user_context"] = context
+        event("auth.resolved", auth_class="authenticated" if token else "anonymous")
         if isinstance(parsed, list):
             # Preflight the entire batch first; only then dispatch each request to SDK transport.
             responses = []

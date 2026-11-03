@@ -52,3 +52,10 @@ async def test_mcp_schema_does_not_require_or_cap_durations():
         if tool.name in {"propose_playlist", "video_to_playlist", "create_playlist_draft"}:
             assert "total_seconds" not in tool.inputSchema.get("required", [])
             assert "max_seconds" not in tool.inputSchema.get("required", [])
+
+
+def test_primary_language_matches_regional_metadata_but_not_other_languages():
+    english = video().model_copy(update={"language": "en-US"})
+    assert select([english], Constraints(topic="Python", language="en")) == [english]
+    assert select([english], Constraints(topic="Python", language="fr")) == []
+    assert select([english], Constraints(topic="Python", language="en-GB")) == []

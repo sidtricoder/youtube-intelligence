@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from sqlalchemy import Column, Integer, String, Table, select, update
 
 from .errors import AppError
+from .observability import event
 from .quota import Quota, Ticket, active_ticket
 
 
@@ -60,6 +61,13 @@ class TenantQuota(Quota):
         if units < 0 or searches < 0:
             raise ValueError("Quota reservations cannot be negative")
         if searches > self.max_searches:
+            event(
+                "quota.rejected",
+                warning=True,
+                error_code="request_search_cap",
+                units=units,
+                searches=searches,
+            )
             raise AppError("quota_exceeded", "Too many searches in one request", 429)
         day = self.day()
         with self.store.tx() as db:
@@ -79,6 +87,14 @@ class TenantQuota(Quota):
                     select(self.ledger.c.units, self.ledger.c.searches).where(self._where(day, key))
                 ).one()
                 if u + units > unit_limit or s + searches > search_limit:
+                    event(
+                        "quota.rejected",
+                        warning=True,
+                        error_code="quota_exceeded",
+                        scope_class="user" if key.startswith("user:") else key,
+                        units=units,
+                        searches=searches,
+                    )
                     raise AppError(
                         "quota_exceeded",
                         (
@@ -93,11 +109,18 @@ class TenantQuota(Quota):
                     .where(self._where(day, key))
                     .values(units=u + units, searches=s + searches)
                 )
+        event(
+            "quota.reserved",
+            units=units,
+            searches=searches,
+            auth_class="anonymous" if self.anonymous else "authenticated",
+        )
         ticket = Ticket(units, searches)
         token = active_ticket.set(ticket)
         try:
             yield ticket
         finally:
+            event("quota.settled", used_units=ticket.used_units, used_searches=ticket.used_searches)
             active_ticket.reset(token)
             with self.store.tx() as db:
                 for key, _, _ in self._scopes():

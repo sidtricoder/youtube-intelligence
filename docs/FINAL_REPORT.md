@@ -1,4 +1,4 @@
-# Final multi-account/lazy-auth report — version 2.2.0
+# Final multi-account/lazy-auth report — version 2.3.0
 
 ## Result and verification
 
@@ -11,12 +11,12 @@ Observed final checks (Python 3.12.14, MCP SDK 1.30.0):
 
 | Check | Result |
 |---|---|
-| `pytest --cov=ytintel --cov-report=term --cov-fail-under=85` | **243 passed, 10 skipped, 0 failed; 91.17% statement coverage** |
+| `pytest --cov=ytintel --cov-report=term --cov-fail-under=85` | **254 passed, 10 skipped, 0 failed; 91.83% statement coverage** |
 | `ruff check src tests scripts` | Passed |
-| `ruff format --check src tests scripts` | Passed (68 Python files) |
+| `ruff format --check src tests scripts` | Passed (71 Python files) |
 | Official MCP client over real TCP | Anonymous and two interleaved synthetic Google identities; FR-1 through FR-5, OAuth/PKCE, refresh replay, isolation and own-browser approvals passed |
 | Chromium `node scripts/browser_smoke.cjs` | Own-session/CSRF, wrong phrase refusal, CREATE, replay 409, mobile, modal/Escape denial, cross-origin callback/token and Google consent passed |
-| Wheel build and isolated installed import | Version 2.2.0 built; imported from site-packages; health and both discovery documents passed |
+| Wheel build and isolated installed import | Version 2.3.0 built; imported from site-packages; health and both discovery documents passed |
 | SQLite migration/reference DDL | Idempotent migration tested; reference DDL applied twice below during archive validation |
 | Secret-pattern/source scan | No configured API keys, database passwords or private-key material found; no `.env`/database in archive |
 | Independent scoped security review | Credential races and stale authority fixed; 71 focused regressions passed for the latest scope/duration review; no remaining critical/important finding in final scoped recheck |
@@ -194,3 +194,15 @@ Consent is a native modal dialog within the OAuth browser tab, with Allow, Cance
 The existing cross-account approval test now captures each user's CSRF while their own draft is pending; completed pages correctly show a result without another creation form. The cross-account rejection assertion remains. New tests first failed for missing dialog rendering, denial minting a code, unstyled browser errors and ignored Accept preferences, then passed after implementation.
 
 Scoped review found no security regression. Its minor Accept-header negotiation finding was corrected with failing-first regressions. Native Windows, live Google/YouTube, Render and optional PostgreSQL were not exercised in this UI revision.
+
+## 2.3.0 validation and Render diagnostics
+
+Added `observability.py`, `mcp_observer.py`, `tests/test_observability.py`, `docs/OBSERVABILITY_PLAN.md` and `docs/UPGRADE_2_3_0.md`. Updated MCP tool registration/schema/instructions, domain language selection, composition root/version, HTTP boundary/gate, quota, Google provider, credentials, OAuth/browser flow, playlist service, duration tests, README, Render deployment and security docs. No production environment or data files were read or changed.
+
+The supplied generic invalid_input response identifies the old ValueError handler but cannot establish which original field failed. The patch exposes safe failing field names and actionable format guidance with a request ID. Schemas advertise 2–200 character topics, language codes and optional positive whole-second bounds without upper duration caps. A separately reproduced bug now permits primary-language requests to match regional metadata (en to en-US), preserving strict requested regions and excluding unknown metadata languages.
+
+JSON stdout events cover request/protocol/tool/auth/quota/cache/provider/discovery/draft/approval/write stages. They include timing and aggregate counts, never identities, raw arguments, metadata, URLs/queries, headers, dynamic IDs, credentials, bodies or exception text. X-Request-ID is server-generated. Existing indistinguishable draft-not-found responses remain unchanged; their correlation uses the header. SDK protocol chatter is suppressed, Uvicorn access logs remain off. Unexpected HTTP errors and broken/completed transport fallbacks cannot emit chained raw exception dumps.
+
+Ten new observability cases and the regional-language regression were added. Red runs observed absent correlation/events, opaque language errors, SDK type rejection without safe diagnostics, missing schema guidance, exact-only language mismatch, and unsafe pre/post-response exception behavior. All now pass. No pre-existing isolation test was removed or weakened. Scoped independent review found a post-start exception-chain risk; failing regressions reproduced it and the fix passed final recheck with no remaining finding.
+
+Final local suite: 254 passed, 10 optional PostgreSQL tests skipped, 91.83% coverage. Ruff check and formatting pass for 71 Python files. Chromium consent/approval/mobile suite passes. Installed 2.3.0 wheel source bytes, imports, HTTP health, OAuth discovery and correlation headers match. All upstream account and YouTube operations remain synthetic in verification; the original deployed failing request cannot be replayed without its actual tool arguments. Render deployment and real Google/YouTube behavior were not exercised.

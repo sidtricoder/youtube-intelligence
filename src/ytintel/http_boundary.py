@@ -11,6 +11,7 @@ from starlette.exceptions import HTTPException
 from .browser_policy import form_redirect_policy
 from .content_negotiation import prefers_html
 from .errors import AppError
+from .observability import event, validation_fields
 from .policy import MCP_SCOPE
 from .ui import error_page
 
@@ -58,6 +59,7 @@ def install_http_boundary(app, auth, issuer):
 
     @app.exception_handler(AppError)
     async def application_error(request, exc):
+        event("request.rejected", warning=True, error_code=exc.code, status=exc.status)
         headers = (
             {
                 "WWW-Authenticate": f'Bearer resource_metadata="{issuer}/.well-known/oauth-protected-resource", scope="{MCP_SCOPE}"'
@@ -71,11 +73,20 @@ def install_http_boundary(app, auth, issuer):
             response.headers["Vary"] = "Accept"
             return response
         return JSONResponse(
-            {"error": {"code": exc.code, "message": exc.message}}, exc.status, headers=headers
+            {"error": {"code": exc.code, "message": exc.message}},
+            exc.status,
+            headers=headers,
         )
 
     @app.exception_handler(ValueError)
     async def invalid_input(request, exc):
+        event(
+            "request.rejected",
+            warning=True,
+            error_code="invalid_input",
+            status=422,
+            fields=validation_fields(exc),
+        )
         if browser_html(request):
             return error_page("Invalid input parameters. Review the request and try again.", 422)
         return JSONResponse(
@@ -84,6 +95,13 @@ def install_http_boundary(app, auth, issuer):
 
     @app.exception_handler(RequestValidationError)
     async def browser_validation_error(request, exc):
+        event(
+            "request.rejected",
+            warning=True,
+            error_code="invalid_input",
+            status=422,
+            fields=validation_fields(exc),
+        )
         if browser_html(request):
             return error_page(
                 "This link is incomplete or invalid. Start again from your AI client or your own draft link.",

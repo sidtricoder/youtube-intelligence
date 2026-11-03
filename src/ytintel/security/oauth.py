@@ -16,6 +16,7 @@ from mcp.server.auth.provider import (
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from sqlalchemy import select
 
+from ..observability import event
 from .store import digest
 
 
@@ -77,6 +78,7 @@ class AuthServer:
         )
 
     async def authorize(self, client, params):
+        event("oauth.authorize_started")
         if not valid_redirect(params.redirect_uri) or str(params.redirect_uri) not in {
             str(uri) for uri in client.redirect_uris or []
         }:
@@ -88,6 +90,7 @@ class AuthServer:
         transaction = self.store.create_login(
             {"client_id": client.client_id, "params": params.model_dump(mode="json")}
         )
+        event("oauth.authorize_ready")
         return self.issuer + "/oauth/start?" + urlencode({"transaction": transaction})
 
     def complete_login(self, transaction, user_id, *, approved=True):
@@ -203,7 +206,9 @@ class AuthServer:
                 if generation is not None and generation == data.get("grant_generation"):
                     result = self._mint(db, client.client_id, data["subject"], data["scopes"])
         if result is None:
+            event("oauth.code_rejected", warning=True, error_code="invalid_grant")
             raise TokenError("invalid_grant", "Code expired, used, or authorization changed")
+        event("oauth.code_exchanged")
         return result
 
     async def load_refresh_token(self, client, refresh_token):
@@ -248,7 +253,9 @@ class AuthServer:
                     )
         # Raise after transaction commits so reuse revocation cannot be rolled back.
         if invalid:
+            event("oauth.refresh_rejected", warning=True, error_code="invalid_grant")
             raise TokenError("invalid_grant", "Refresh token invalid or reused")
+        event("oauth.refresh_rotated")
         return result
 
     async def load_access_token(self, token):

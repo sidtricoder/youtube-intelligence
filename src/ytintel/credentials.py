@@ -5,6 +5,7 @@ import time
 
 from .errors import AppError
 from .identity import WRITE_SCOPE, IdentityProvider
+from .observability import event
 from .security.protocols import TokenStore
 from .tenancy import ScopedStore
 
@@ -20,6 +21,7 @@ class Credentials:
 
     def invalidate(self, user_id: str, generation: int | None = None) -> None:
         self.store.revoke_user(user_id, expected_generation=generation)
+        event("auth.user_revoked")
 
     async def access(self, user_id: str) -> str:
         async with self._locks.setdefault(user_id, asyncio.Lock()):
@@ -32,9 +34,16 @@ class Credentials:
                 if not tokens.get("refresh_token"):
                     self.invalidate(user_id, generation)
                     raise AppError("reauthorization_required", "Sign in with Google again", 401)
+                event("google.refresh_started")
                 try:
                     refreshed = await self.idp.refresh(tokens["refresh_token"])
                 except AppError as exc:
+                    event(
+                        "google.refresh_failed",
+                        warning=True,
+                        error_code=exc.code,
+                        status=exc.status,
+                    )
                     if exc.status == 401:
                         self.invalidate(user_id, generation)
                     raise
@@ -46,6 +55,7 @@ class Credentials:
                         "Google authorization changed; retry sign-in",
                         401,
                     )
+                event("google.refresh_completed")
             return tokens["access_token"]
 
     def require_write(self, user_id: str) -> None:
@@ -69,6 +79,7 @@ class Credentials:
                         await self.idp.revoke(tokens["refresh_token"])
                 except AppError:
                     revoked = False
+                event("account.disconnected", outcome="revoked" if revoked else "local_only")
                 return {
                     "status": "disconnected",
                     "google_grant_revoked": revoked,

@@ -8,6 +8,7 @@ from functools import wraps
 from .context import UserContext
 from .domain import Constraints, analyse, rank, select, similarities, video_id
 from .errors import AppError
+from .observability import event
 from .providers.base import Provider
 
 
@@ -168,14 +169,17 @@ class Intelligence:
         return self._choose(candidates, constraints)
 
     async def _discover(self, constraints, seed=None):
+        event("discovery.started")
         candidates = await self.provider.search(constraints.topic, constraints.language)
         if seed:
             candidates = (await self.provider.videos([seed])) + candidates
+        event("discovery.completed", candidate_count=len(candidates))
         return candidates
 
     @staticmethod
     def _choose(candidates, constraints):
         chosen = select(candidates, constraints)
+        event("playlist.selected", candidate_count=len(candidates), selected_count=len(chosen))
         if not chosen:
             raise AppError(
                 "no_matches",
@@ -257,6 +261,7 @@ class Intelligence:
             "caveat": "Metadata-only selection. Duration is an upper bound; metadata is untrusted.",
         }
         self.store.put("draft:" + ident, draft, ttl=1800)
+        event("draft.created", video_count=len(chosen), status="pending")
         return draft
 
     def draft(self, ident):
@@ -290,6 +295,7 @@ class Intelligence:
         return await self._write(ident, "partial")
 
     async def _write(self, ident, expected):
+        event("playlist.write_started", step="approval")
         self.require_write()
         preview = self.draft(ident)
         if preview["status"] != expected:
@@ -321,12 +327,24 @@ class Intelligence:
                     self.save(d)
                     await self.provider.add_video(d["playlist_id"], v["id"])
                     d["inserted"].append(v["id"])
+                    event(
+                        "playlist.video_inserted",
+                        inserted_count=len(d["inserted"]),
+                        video_count=len(d["videos"]),
+                    )
                     d["status"] = "writing"
                     self.save(d)
                 d["status"] = "complete"
                 self.save(d)
             except AppError as e:
                 d["status"] = "uncertain" if e.code == "upstream_unavailable" else "partial"
+                event("playlist.write_failed", warning=True, error_code=e.code, status=d["status"])
                 d["error"] = {"code": e.code, "message": e.message}
                 self.save(d)
+            event(
+                "playlist.write_completed",
+                status=d["status"],
+                inserted_count=len(d["inserted"]),
+                video_count=len(d["videos"]),
+            )
             return d

@@ -65,3 +65,7 @@ support beyond this authorization compatibility: MCP wire negotiation uses the p
 ## Browser presentation
 
 `ui.py` contains escaped HTML renderers; `ui_theme.py` contains the responsive self-contained CSS. `web.py` owns session, CSRF and authorization decisions. `http_boundary.py` negotiates browser error HTML while preserving API responses. `browser_policy.py` builds restricted form-origin policies and the consent script's per-response nonce policy. OAuth denial is consumed atomically by `AuthServer.complete_login(approved=False)` without creating a code.
+
+## Request diagnostics
+
+`observability.py` owns stdout event formatting, allow-listed fields, safe validation guidance and the outer ASGI correlation boundary. `mcp_observer.py` extends the SDK dispatch method to observe validation before tool execution and sanitize unexpected tool failures. Transport code contains no playlist decision logic. Domain/service/provider/auth layers emit aggregate stage events without credentials or personal metadata. The request context ID flows through ContextVar and is never accepted from a client header.

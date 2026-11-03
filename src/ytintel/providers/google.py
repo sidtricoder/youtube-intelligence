@@ -2,12 +2,14 @@
 
 import hashlib
 import json
+import time
 
 import httpx
 
 from ..context import AnonymousContext
 from ..domain import Video, channel_ref, duration
 from ..errors import AppError
+from ..observability import event
 from ..quota import active_ticket
 from ..tenancy import PublicStore
 
@@ -36,6 +38,13 @@ class GoogleProvider:
 
     async def request(self, endpoint, params=None, body=None):
         method = "POST" if body is not None else "GET"
+        started = time.monotonic()
+        operation = (
+            endpoint
+            if endpoint
+            in {"search", "videos", "channels", "subscriptions", "playlists", "playlistItems"}
+            else "unknown"
+        )
         key = (
             "cache:"
             + hashlib.sha256(json.dumps([endpoint, params], sort_keys=True).encode()).hexdigest()
@@ -55,6 +64,7 @@ class GoogleProvider:
         if method == "GET":
             cached = cache_store.get(key)
             if cached is not None:
+                event("youtube.cache_hit", endpoint=operation, public=public)
                 return cached
         headers = {}
         if public:
@@ -71,6 +81,7 @@ class GoogleProvider:
             0 if endpoint == "search" else (50 if body is not None else 1),
             1 if endpoint == "search" else 0,
         )
+        event("youtube.started", endpoint=operation, method=method, public=public)
         try:
             r = await self.client.request(
                 method,
@@ -80,6 +91,13 @@ class GoogleProvider:
                 headers=headers,
             )
         except httpx.RequestError:
+            event(
+                "youtube.failed",
+                warning=True,
+                endpoint=operation,
+                error_code="upstream_unavailable",
+                duration_ms=round((time.monotonic() - started) * 1000, 2),
+            )
             raise AppError(
                 "upstream_unavailable",
                 "YouTube connection failed; write outcome may be unknown",
@@ -115,8 +133,22 @@ class GoogleProvider:
                 if r.status_code >= 500
                 else ("forbidden", 403),
             )
+            event(
+                "youtube.failed",
+                warning=True,
+                endpoint=operation,
+                status=r.status_code,
+                error_code=code,
+                duration_ms=round((time.monotonic() - started) * 1000, 2),
+            )
             raise AppError(code, "YouTube request failed: " + code, status)
         result = r.json()
+        event(
+            "youtube.completed",
+            endpoint=operation,
+            status=r.status_code,
+            duration_ms=round((time.monotonic() - started) * 1000, 2),
+        )
         if method == "GET":
             cache_store.put(key, result, ttl=300)
         return result

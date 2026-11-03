@@ -19,6 +19,7 @@ from .identity import GoogleIdentityProvider, IdentityProvider
 from .mcp_server import build_mcp
 from .migrate import migrate
 from .oauth_routes import install_oauth_routes
+from .observability import RequestLogging, configure_logging, event
 from .providers.google import GoogleProvider
 from .security import AuthServer, SecurityStore
 from .service import Intelligence
@@ -35,6 +36,7 @@ def create_app(
     identity_provider: IdentityProvider | None = None,
     provider_factory=None,
 ):
+    configure_logging()
     s = settings or Settings()
     issuer = s.public_base_url or s.local_base_url.rstrip("/")
     raw = (
@@ -43,6 +45,7 @@ def create_app(
         else Store(s.db_path, s.encryption_key)
     )
     migrate(raw)
+    event("storage.ready", database="postgres" if s.database_connection else "sqlite")
     security = SecurityStore(raw)
     auth = AuthServer(security, issuer)
     client = httpx.AsyncClient(timeout=20, follow_redirects=False)
@@ -117,11 +120,13 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app):
         async with mcp.session_manager.run():
+            event("server.started", version="2.3.0")
             yield
+        event("server.stopping", version="2.3.0")
         await client.aclose()
         raw.close()
 
-    app = FastAPI(title="YouTube Intelligence", version="2.2.0", lifespan=lifespan)
+    app = FastAPI(title="YouTube Intelligence", version="2.3.0", lifespan=lifespan)
     app.state.store, app.state.security, app.state.auth = raw, security, auth
     app.state.mcp, app.state.credentials = mcp, credentials
     app.state.context_factory, app.state.service_factory = context_factory, service_factory
@@ -173,4 +178,5 @@ def create_app(
         windows=rate_windows,
         max_searches=s.max_searches_per_request,
     )
+    app.add_middleware(RequestLogging)
     return app

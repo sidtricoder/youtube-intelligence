@@ -13,6 +13,7 @@ from .content_negotiation import prefers_html
 from .context import UserContext
 from .errors import AppError
 from .identity import WRITE_SCOPE
+from .observability import event
 from .tenant_quota import TenantQuota
 
 
@@ -77,6 +78,7 @@ def install_browser_routes(
         pending = security.get_login(transaction)
         if not pending or pending.get("started"):
             raise AppError("invalid_login", "Login expired or already started", 400)
+        event("google.login_started")
         binding = secrets.token_urlsafe(32)
         pending.update(
             started=True,
@@ -120,7 +122,9 @@ def install_browser_routes(
         pending = security.take_login(state)
         if not pending:
             raise AppError("invalid_login", "Login already used", 400)
+        event("google.exchange_started")
         identity = await idp.exchange(code, pending["verifier"], pending["nonce"])
+        event("google.exchange_completed")
         user_id = security.upsert_user(identity.sub)
         if pending.get("expected_user_id") and pending["expected_user_id"] != user_id:
             raise AppError(
@@ -193,6 +197,7 @@ def install_browser_routes(
                 "Login expired or authorization changed. Start a fresh connection.",
                 400,
             ) from None
+        event("oauth.consent_completed", outcome="allowed" if decision == "allow" else "denied")
         return RedirectResponse(target, 302)
 
     @app.get("/approve/{ident}", response_class=HTMLResponse)
@@ -229,6 +234,7 @@ def install_browser_routes(
         phrase = "RESUME" if draft["status"] == "partial" else "CREATE"
         if confirmation != phrase:
             raise AppError("confirmation_required", "Type the displayed confirmation phrase", 403)
+        event("playlist.approval_verified")
         credentials.require_write(session["user_id"])
         await credentials.access(session["user_id"])
         result = await (

@@ -110,7 +110,13 @@ def select(videos: list[Video], c: Constraints) -> list[Video]:
     seen, result, used = set(), [], 0
     for item in rank(c.topic, videos):
         v = item["video"]
-        language_ok = not c.language or (v.language or "").casefold() == c.language.casefold()
+        requested = (c.language or "").casefold()
+        actual = (v.language or "").casefold()
+        language_ok = (
+            not requested
+            or actual == requested
+            or ("-" not in requested and actual.startswith(requested + "-"))
+        )
         if (
             v.id not in seen
             and 0 < v.seconds
