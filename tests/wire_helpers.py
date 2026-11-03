@@ -31,6 +31,7 @@ class FakeIdentity:
     def __init__(self):
         self.pending = {}
         self.exchanges = []
+        self.decline_write = False
 
     def authorization_url(self, state, nonce, verifier, write=False):
         self.pending[state] = (nonce, verifier, write)
@@ -46,7 +47,8 @@ class FakeIdentity:
             {
                 "access_token": "google-" + code,
                 "refresh_token": "refresh-" + code,
-                "scope": READ_SCOPE + (" " + WRITE_SCOPE if write else ""),
+                "scope": READ_SCOPE
+                + (" " + WRITE_SCOPE if write and not self.decline_write else ""),
                 "expires_at": time.time() + 3600,
             },
         )

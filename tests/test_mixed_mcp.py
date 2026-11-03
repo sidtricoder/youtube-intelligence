@@ -319,3 +319,56 @@ async def test_revoked_google_grant_challenges_and_revokes_only_that_account(ser
         assert (
             await rpc(server, tool("video_summary", {"video": "aaaaaaaaaaa"}), bob["access_token"])
         ).status_code == 200
+
+
+async def test_initial_connection_requests_write_permission_and_long_draft_needs_no_step_up(server):
+    async with httpx.AsyncClient(base_url=server.origin, trust_env=False) as browser:
+        grant = await login(server, browser, "alice")
+        assert server.idp.exchanges == [("alice", True)]
+        async with mcp_session(server, grant["access_token"]) as session:
+            await call(session, "video_summary", {"video": "aaaaaaaaaaa"})
+            provider = server.providers["alice"]
+            provider.items = [v.model_copy(update={"seconds": 12 * 3600}) for v in provider.items]
+            draft = await call(
+                session, "create_playlist_draft", {"topic": "Python", "exclude_saved": False}
+            )
+            assert draft["total_seconds"] > 14400
+            assert draft["constraints"]["total_seconds"] is None
+            page = await browser.get("/approve/" + draft["id"])
+            assert "Type CREATE" in page.text and "enable-writes" not in page.text
+            assert provider.created == []
+            from tests.wire_helpers import csrf
+
+            approved = await browser.post(
+                "/approve/" + draft["id"], data={"csrf": csrf(page), "confirmation": "CREATE"}
+            )
+            assert approved.status_code == 200 and approved.json()["status"] == "complete"
+            assert server.idp.exchanges == [("alice", True)]
+
+
+async def test_user_declining_write_scope_keeps_read_access_and_can_explicitly_reauthorize(server):
+    from tests.wire_helpers import csrf
+
+    server.idp.decline_write = True
+    async with httpx.AsyncClient(base_url=server.origin, trust_env=False) as browser:
+        grant = await login(server, browser, "alice")
+        assert server.idp.exchanges == [("alice", True)]
+        async with mcp_session(server, grant["access_token"]) as session:
+            assert (await call(session, "recommendations"))["recommendations"]
+            draft = await call(session, "create_playlist_draft", {"topic": "Python"})
+            path = "/approve/" + draft["id"]
+            page = await browser.get(path)
+            assert "enable-writes" in page.text
+            denied = await browser.post(path, data={"csrf": csrf(page), "confirmation": "CREATE"})
+            assert denied.status_code == 403
+            assert server.providers["alice"].created == []
+            server.idp.decline_write = False
+            enable = await browser.post(path + "/enable-writes", data={"csrf": csrf(page)})
+            from tests.wire_helpers import upstream
+
+            assert await upstream(browser, enable.headers["location"], "alice") == path
+            page = await browser.get(path)
+            assert "enable-writes" not in page.text
+            assert (
+                await browser.post(path, data={"csrf": csrf(page), "confirmation": "CREATE"})
+            ).json()["status"] == "complete"

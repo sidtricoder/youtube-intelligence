@@ -29,8 +29,8 @@ class Video(BaseModel):
 class Constraints(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     topic: str = Field(min_length=2, max_length=200)
-    total_seconds: int = Field(ge=60, le=14400)
-    max_seconds: int = Field(ge=30, le=7200)
+    total_seconds: int | None = Field(default=None, gt=0, strict=True)
+    max_seconds: int | None = Field(default=None, gt=0, strict=True)
     language: str | None = Field(default=None, pattern=r"^[a-z]{2,3}(-[A-Za-z]{2,4})?$")
 
 
@@ -113,8 +113,9 @@ def select(videos: list[Video], c: Constraints) -> list[Video]:
         language_ok = not c.language or (v.language or "").casefold() == c.language.casefold()
         if (
             v.id not in seen
-            and 0 < v.seconds <= c.max_seconds
-            and used + v.seconds <= c.total_seconds
+            and 0 < v.seconds
+            and (c.max_seconds is None or v.seconds <= c.max_seconds)
+            and (c.total_seconds is None or used + v.seconds <= c.total_seconds)
             and language_ok
             and item["score"] > 0
         ):
@@ -138,7 +139,7 @@ def parse_request(text: str) -> Constraints:
     )
     topic = re.search(r"\bon\s+(.+?)(?:,|;|$)", text, re.I)
     lang = re.search(r"\blanguage\s+([a-z]{2,3}(?:-[A-Za-z]{2,4})?)\b", text, re.I)
-    if not total or not cap or not topic:
+    if not topic or not re.search(r"\bplaylist\b", text, re.I):
         raise ValueError(
             "Use: Build a 2 hour playlist on Python, no video over 20 minutes, language en; or send structured constraints"
         )
@@ -148,8 +149,8 @@ def parse_request(text: str) -> Constraints:
 
     return Constraints(
         topic=topic[1].strip(),
-        total_seconds=sec(total),
-        max_seconds=sec(cap),
+        total_seconds=sec(total) if total else None,
+        max_seconds=sec(cap) if cap else None,
         language=lang[1].lower() if lang else None,
     )
 

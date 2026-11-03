@@ -6,7 +6,7 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 
-from tests.wire_helpers import call, csrf, login, mcp_session, running_server, upstream
+from tests.wire_helpers import call, csrf, login, mcp_session, running_server
 from ytintel.policy import RESOURCE_TIERS, TOOL_TIERS, Tier
 
 
@@ -79,6 +79,7 @@ async def test_two_accounts_interleaved_fr1_to_fr5_and_browser_confirmation(serv
         httpx.AsyncClient(base_url=server.origin, trust_env=False) as bob,
     ):
         a, b = await login(server, alice, "alice"), await login(server, bob, "bob")
+        assert server.idp.exchanges == [("alice", True), ("bob", True)]
         async with (
             mcp_session(server, a["access_token"]) as sa,
             mcp_session(server, b["access_token"]) as sb,
@@ -126,6 +127,11 @@ async def test_two_accounts_interleaved_fr1_to_fr5_and_browser_confirmation(serv
                 "max_searches_per_request",
             }
             assert all(not p.created for p in server.providers.values())
+            # Capture each user's own CSRF before writing. Completed pages have no write form.
+            session_csrf = {
+                "alice": csrf(await alice.get("/approve/" + da["id"])),
+                "bob": csrf(await bob.get("/approve/" + db["id"])),
+            }
             for browser, session, draft, other_browser, label in (
                 (alice, sa, da, bob, "alice"),
                 (bob, sb, db, alice, "bob"),
@@ -138,8 +144,13 @@ async def test_two_accounts_interleaved_fr1_to_fr5_and_browser_confirmation(serv
                 other_page = await other_browser.get(
                     "/approve/" + (db if label == "alice" else da)["id"]
                 )
+                assert other_page.status_code == 200
                 cross_post = await other_browser.post(
-                    path, data={"csrf": csrf(other_page), "confirmation": "CREATE"}
+                    path,
+                    data={
+                        "csrf": session_csrf["bob" if label == "alice" else "alice"],
+                        "confirmation": "CREATE",
+                    },
                 )
                 assert cross_post.status_code == 404 and cross_post.json() == nonexistent.json()
                 async with httpx.AsyncClient(
@@ -155,13 +166,9 @@ async def test_two_accounts_interleaved_fr1_to_fr5_and_browser_confirmation(serv
                     )
                     assert denied.status_code == 401
                 page = await browser.get(path)
-                assert "enable-writes" in page.text
+                # Both users granted writes during initial setup: no second Google consent.
+                assert "enable-writes" not in page.text
                 assert (await browser.post(path + "/enable-writes", data={})).status_code == 403
-                enable = await browser.post(path + "/enable-writes", data={"csrf": csrf(page)})
-                assert enable.status_code == 302
-                return_path = await upstream(browser, enable.headers["location"], label)
-                assert return_path == path
-                page = await browser.get(path)
                 assert "Type CREATE" in page.text
                 for form in (
                     {"confirmation": "CREATE"},
@@ -180,9 +187,4 @@ async def test_two_accounts_interleaved_fr1_to_fr5_and_browser_confirmation(serv
                 assert (
                     await browser.post(path, data={"csrf": csrf(page), "confirmation": "CREATE"})
                 ).status_code == 409
-            assert server.idp.exchanges == [
-                ("alice", False),
-                ("bob", False),
-                ("alice", True),
-                ("bob", True),
-            ]
+            assert server.idp.exchanges == [("alice", True), ("bob", True)]

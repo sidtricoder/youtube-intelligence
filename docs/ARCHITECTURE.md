@@ -39,7 +39,7 @@ Recommendations derive bounded seeds from the caller's likes, playlists and subs
 
 A protected draft stores exact ordered video IDs, metadata snapshot, constraints, expiry, owner subject and progress. No endpoint mutates its content. Browser approval validates that same subject and exact draft. Persistent credential generations invalidate stale read/write/refresh operations after disconnect or a newer login, so an in-flight response cannot resurrect an old grant. `pending → writing → complete` uses atomic claims. Before an external write, progress is persisted as uncertain; a successful response records the playlist/inserted item. A known rejection may become partial and permit explicit browser resume with `RESUME` confirmation. Ambiguous failures remain uncertain. Remote exactly-once delivery cannot be guaranteed without Google idempotency support.
 
-Constraints include topic 2–200 characters, total 60–14,400 seconds and per-video maximum 30–7,200 seconds. Optional language requires exact declared metadata; unknown language is excluded. Duration-zero/unavailable/live candidates are excluded, duplicates collapse, and total runtime never exceeds its ceiling. The algorithm may leave unused runtime rather than relax constraints.
+Constraints include topic 2–200 characters and optional positive integer duration values. There is no fixed server minimum/maximum total or per-video duration; omitted/null duration values are unbounded. Optional language requires exact declared metadata; unknown language is excluded. Duration-zero/unavailable/live candidates are excluded, duplicates collapse, and total runtime never exceeds its ceiling. The algorithm may leave unused runtime rather than relax constraints.
 
 ## Persistence and quota
 
@@ -61,3 +61,7 @@ explicit S256 and token-request resource validation where the SDK does not forwa
 CIMD is recommended by the current specification but has no authorization-server primitive in this
 SDK version; DCR remains the supported interoperability path. We do not claim 2026 protocol-wide
 support beyond this authorization compatibility: MCP wire negotiation uses the pinned SDK.
+
+## Browser presentation
+
+`ui.py` contains escaped HTML renderers; `ui_theme.py` contains the responsive self-contained CSS. `web.py` owns session, CSRF and authorization decisions. `http_boundary.py` negotiates browser error HTML while preserving API responses. `browser_policy.py` builds restricted form-origin policies and the consent script's per-response nonce policy. OAuth denial is consumed atomically by `AuthServer.complete_login(approved=False)` without creating a code.

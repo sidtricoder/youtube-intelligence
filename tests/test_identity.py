@@ -68,20 +68,20 @@ def transport_for(key, token, seen=None):
     return respond
 
 
-def test_authorization_uses_pkce_and_minimum_scopes_with_explicit_write_upgrade():
+def test_authorization_requests_read_and_write_upfront_with_pkce():
     identity = provider(lambda request: pytest.fail("authorization must be local"))
     query = parse_qs(urlparse(identity.authorization_url("state", "nonce", "verifier")).query)
     assert query["state"] == ["state"]
     assert query["nonce"] == ["nonce"]
-    assert query["scope"][0].split() == ["openid", READ_SCOPE]
+    assert query["scope"][0].split() == ["openid", READ_SCOPE, WRITE_SCOPE]
     assert query["code_challenge_method"] == ["S256"]
     challenge = urlsafe_b64encode(hashlib.sha256(b"verifier").digest()).rstrip(b"=").decode()
     assert query["code_challenge"] == [challenge]
     assert query["access_type"] == ["offline"]
     assert query["prompt"] == ["consent"]
     assert query["include_granted_scopes"] == ["true"]
-    write = parse_qs(urlparse(identity.authorization_url("s", "n", "v", write=True)).query)
-    assert WRITE_SCOPE in write["scope"][0].split()
+    read = parse_qs(urlparse(identity.authorization_url("s", "n", "v", write=False)).query)
+    assert read["scope"][0].split() == ["openid", READ_SCOPE]
 
 
 async def test_exchange_verifies_google_subject_and_normalizes_credentials(signing_key):

@@ -1,4 +1,4 @@
-# Final multi-account/lazy-auth report — version 2.0.1
+# Final multi-account/lazy-auth report — version 2.2.0
 
 ## Result and verification
 
@@ -11,15 +11,15 @@ Observed final checks (Python 3.12.14, MCP SDK 1.30.0):
 
 | Check | Result |
 |---|---|
-| `pytest --cov=ytintel --cov-report=term --cov-fail-under=85` | **220 passed, 10 skipped, 0 failed; 91.22% statement coverage** |
+| `pytest --cov=ytintel --cov-report=term --cov-fail-under=85` | **243 passed, 10 skipped, 0 failed; 91.17% statement coverage** |
 | `ruff check src tests scripts` | Passed |
-| `ruff format --check src tests scripts` | Passed (63 Python files) |
+| `ruff format --check src tests scripts` | Passed (68 Python files) |
 | Official MCP client over real TCP | Anonymous and two interleaved synthetic Google identities; FR-1 through FR-5, OAuth/PKCE, refresh replay, isolation and own-browser approvals passed |
-| Chromium `node scripts/browser_smoke.cjs` | Own-session/CSRF form, wrong phrase refusal, typed CREATE, completed playlist, replay 409 and mobile page passed |
-| Wheel build and isolated installed import | Version 2.0.1 built; imported from site-packages; health and both discovery documents passed |
+| Chromium `node scripts/browser_smoke.cjs` | Own-session/CSRF, wrong phrase refusal, CREATE, replay 409, mobile, modal/Escape denial, cross-origin callback/token and Google consent passed |
+| Wheel build and isolated installed import | Version 2.2.0 built; imported from site-packages; health and both discovery documents passed |
 | SQLite migration/reference DDL | Idempotent migration tested; reference DDL applied twice below during archive validation |
 | Secret-pattern/source scan | No configured API keys, database passwords or private-key material found; no `.env`/database in archive |
-| Independent scoped security review | Credential races and stale authority fixed; 50 focused regressions passed; no remaining critical/important finding in final scoped recheck |
+| Independent scoped security review | Credential races and stale authority fixed; 71 focused regressions passed for the latest scope/duration review; no remaining critical/important finding in final scoped recheck |
 
 The optional ten PostgreSQL tests were skipped because TEST_DATABASE_URL was not supplied.
 CI includes a disposable PostgreSQL 17 service and runs those tests there. This local run did
@@ -34,8 +34,8 @@ Starlette/httpx TestClient deprecation warning; it does not fail tests.
   ProviderTokenVerifier, OAuth handlers and access-token models are used.
 - Strict DCR redirect URIs, S256, exact resource/audience binding, expiring single-use codes,
   hashed access/refresh credentials, rotating refresh tokens, replay-family revocation.
-- Google RS256 OIDC verification (issuer/audience/expiry/nonce/sub), read-only default consent,
-  incremental write scope, browser session/CSRF/account matching and typed confirmation.
+- Google RS256 OIDC verification (issuer/audience/expiry/nonce/sub), upfront read/write consent,
+  upfront write scope with declined/legacy-grant recovery, browser session/CSRF/account matching and typed confirmation.
 - Account-bound immutable context and persistent authorization generation. Concurrent refresh,
   old Google failures, stale browser callbacks, stale contexts, code issuance/redemption and
   session creation cannot restore revoked authority or revoke a newer grant.
@@ -171,3 +171,26 @@ See UPGRADE_2_0_1.md for exact Render/Google settings and a fresh sign-in sequen
 bootstrap assertion and cross-platform exclusive-create check. Expanded the Chromium regression
 through a real form POST, registered cross-origin callback, token exchange and intercepted Google
 write-consent page. Native Windows CI remains to be re-run by GitHub Actions. No `.env`/data changed.
+
+
+## 2.1.0 permissions and duration update
+
+User-directed changes supersede the old incremental-write/default-duration requirements. The
+initial sign-in requests both read and write scopes, and the local client consent wording explains
+that per-draft browser approval is still necessary. No fixed playlist/per-video duration floor or
+ceiling remains; optional null/omitted bounds are unlimited, positive caller bounds are enforced.
+Updated domain.py, identity.py, web.py, mcp_server.py, setup/script/MCP tests and current guides.
+Added tests/test_duration_freedom.py, docs/UPFRONT_CONSENT_PLAN.md and docs/UPGRADE_2_1_0.md.
+The two-account system test now verifies initial write grants and zero extra consent for normal
+writes; declined/legacy-write recovery retains separate regression coverage. Reconnect once after
+redeployment to grant the broader Google scope. No existing .env/data was read or edited.
+
+## 2.2.0 consent dialog and browser design
+
+Added `src/ytintel/ui.py`, `ui_theme.py`, `content_negotiation.py`, `tests/test_ui.py`, and `docs/UPGRADE_2_2_0.md`. Updated `web.py`, `http_boundary.py`, `browser_policy.py`, `security/oauth.py`, `app.py`, `pyproject.toml`, `tests/test_mcp.py`, `scripts/browser_smoke.cjs`, README, SECURITY, ARCHITECTURE and this report.
+
+Consent is a native modal dialog within the OAuth browser tab, with Allow, Cancel and Escape handling. Denial consumes the transaction without issuing a code. The home, draft review, completion/partial/uncertain result and browser errors share responsive styling. All untrusted metadata remains escaped. Minimal dialog JavaScript uses a per-response CSP nonce; APIs retain JSON, including when HTML is explicitly unacceptable or JSON is preferred. No new infrastructure configuration or migration is needed.
+
+The existing cross-account approval test now captures each user's CSRF while their own draft is pending; completed pages correctly show a result without another creation form. The cross-account rejection assertion remains. New tests first failed for missing dialog rendering, denial minting a code, unstyled browser errors and ignored Accept preferences, then passed after implementation.
+
+Scoped review found no security regression. Its minor Accept-header negotiation finding was corrected with failing-first regressions. Native Windows, live Google/YouTube, Render and optional PostgreSQL were not exercised in this UI revision.

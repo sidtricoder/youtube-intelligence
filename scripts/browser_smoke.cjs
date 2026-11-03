@@ -37,17 +37,34 @@ async function main() {
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
+    if(process.env.YTINTEL_PREVIEW_DIR) {
+      fs.mkdirSync(process.env.YTINTEL_PREVIEW_DIR, {recursive:true});
+      await page.goto(base + '/');
+      await page.screenshot({path:path.join(process.env.YTINTEL_PREVIEW_DIR, 'home-desktop.png'),fullPage:true});
+    }
     const approval = base + '/approve/' + draft.id;
     await page.goto(approval);
+    if(process.env.YTINTEL_PREVIEW_DIR) {
+      fs.mkdirSync(process.env.YTINTEL_PREVIEW_DIR, {recursive:true});
+      await page.screenshot({path:path.join(process.env.YTINTEL_PREVIEW_DIR, 'approval-desktop.png'),fullPage:true});
+    }
     assert((await page.locator('pre').textContent()).includes('pending'));
+    if(process.env.YTINTEL_PREVIEW_DIR) {
+      await page.setViewportSize({width:390,height:844});
+      assert.equal(await page.locator('body').evaluate(body => body.scrollWidth > innerWidth), false);
+      await page.screenshot({path:path.join(process.env.YTINTEL_PREVIEW_DIR, 'approval-mobile.png'),fullPage:true});
+      await page.setViewportSize({width:1365,height:1000});
+    }
     assert.equal(await page.locator('input[name=csrf]').inputValue(), fixture.csrf);
     await page.locator('input[name=confirmation]').fill('yes');
     await Promise.all([page.waitForNavigation(), page.getByRole('button', { name: 'Confirm playlist in my account' }).click()]);
-    assert((await page.locator('body').textContent()).includes('confirmation_required'), (await page.locator('body').textContent()).slice(0,500));
+    assert((await page.locator('body').textContent()).includes('Type the displayed confirmation phrase'), (await page.locator('body').textContent()).slice(0,500));
     await page.goto(approval);
     await page.locator('input[name=confirmation]').fill('CREATE');
     await Promise.all([page.waitForNavigation(), page.getByRole('button', { name: 'Confirm playlist in my account' }).click()]);
     assert((await page.locator('body').textContent()).includes('complete'));
+    assert(await page.getByRole('link', {name:'Open playlist on YouTube ↗'}).isVisible());
+    if(process.env.YTINTEL_PREVIEW_DIR) await page.screenshot({path:path.join(process.env.YTINTEL_PREVIEW_DIR, 'complete-desktop.png'),fullPage:true});
     const replay = await fetch(approval, { method: 'POST', headers: {
       Cookie: 'yt_session=' + fixture.cookie, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ csrf: fixture.csrf, confirmation: 'CREATE' }) });
@@ -56,9 +73,25 @@ async function main() {
     await page.setViewportSize({ width: 390, height: 844 });
     assert(await page.locator('h1').isVisible());
     // A real form POST must follow its OAuth redirect to a different origin.
+    const cancelled = await (await fetch(base + '/__consent_fixture')).json();
+    await page.goto(base + cancelled.url);
+    assert(await page.locator('#consent-dialog').evaluate(dialog => dialog.matches(':modal')));
+    assert.equal(await page.locator('dialog').getAttribute('aria-labelledby'), 'consent-title');
+    await page.keyboard.press('Escape');
+    await page.waitForURL(url => url.hostname === '127.0.0.1' && url.searchParams.get('error') === 'access_denied');
+    assert.equal(new URL(page.url()).searchParams.get('code'), null);
     const consent = await (await fetch(base + '/__consent_fixture')).json();
     const consentPage = await page.goto(base + consent.url);
     assert(consentPage.headers()['content-security-policy'].includes(new URL(consent.redirect_uri).origin));
+    assert(consentPage.headers()['content-security-policy'].includes("script-src 'nonce-"));
+    assert(await page.locator('#consent-dialog').evaluate(dialog => dialog.matches(':modal')));
+    assert.equal(await page.locator('body').evaluate(body => body.scrollWidth > innerWidth), false);
+    if(process.env.YTINTEL_PREVIEW_DIR) {
+      fs.mkdirSync(process.env.YTINTEL_PREVIEW_DIR, {recursive:true});
+      await page.screenshot({path:path.join(process.env.YTINTEL_PREVIEW_DIR, 'consent-mobile.png')});
+      await page.setViewportSize({width:1365,height:1000});
+      await page.screenshot({path:path.join(process.env.YTINTEL_PREVIEW_DIR, 'consent-desktop.png')});
+    }
     const cspErrors = [];
     page.on('console', msg => { if (msg.type() === 'error' && /Content Security Policy|form-action/i.test(msg.text())) cspErrors.push(msg.text()); });
     await page.getByRole('button', { name: 'Allow this client' }).click();
@@ -90,7 +123,7 @@ async function main() {
     assert((await page.locator('body').textContent()).includes('Synthetic Google write consent'));
     assert.deepEqual(cspErrors, []);
     assert.deepEqual(errors, []);
-    console.log('PASS: Chromium own-session approval, CSRF form, typed confirmation, no write on wrong phrase, complete playlist, replay refusal, mobile page, cross-origin AI consent callback/token exchange and Google write consent; no CSP violations or JavaScript errors.');
+    console.log('PASS: Chromium own-session approval, CSRF form, typed confirmation, no write on wrong phrase, complete playlist, replay refusal, mobile page, native modal/keyboard cancellation, cross-origin AI consent callback/token exchange and Google write consent; no CSP violations or JavaScript errors.');
   } finally {
     if (browser) await browser.close();
     server.kill();

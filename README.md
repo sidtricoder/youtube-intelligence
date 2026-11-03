@@ -2,18 +2,20 @@
 
 Discover related YouTube videos and channels publicly, then sign in with your own Google account for recommendations, engagement analysis and reviewed private playlists. The production provider uses the official YouTube Data API v3. Summaries use title/description metadata, not transcripts or claims of watching a video.
 
-For the Windows CI and consent-form fixes, follow [the 2.0.1 upgrade steps](docs/UPGRADE_2_0_1.md).
+The account consent screen is now an accessible modal dialog in the OAuth browser tab. The home, playlist review, completion and browser error pages share a responsive design. See [the 2.2.0 upgrade steps](docs/UPGRADE_2_2_0.md).
 
-Start with [Render + Neon deployment](docs/DEPLOY_RENDER.md). The hosted MCP URL is **`https://<host>/mcp/`**. In Claude choose **Streamable HTTP**, **Sign In When Needed** and **Register Automatically**. Use the plain URL with its trailing slash; no static bearer key, query key or custom header is needed. Sign-in is requested when you use protected features.
+For upfront permissions and unrestricted durations, follow [the 2.1.0 upgrade steps](docs/UPGRADE_2_1_0.md). The earlier Windows/CSP fixes are retained.
+
+Start with [Render + Neon deployment](docs/DEPLOY_RENDER.md). The hosted MCP URL is **`https://<host>/mcp/`**. In Claude choose **Streamable HTTP**, **Sign In Now** and **Register Automatically**. Use the plain URL with its trailing slash; no static bearer key, query key or custom header is needed. Choose Sign In Now to grant permissions during setup. Public tools still support anonymous access; Sign In When Needed defers this same sign-in until protected work.
 
 The handoff contains `.env.example`, never a configured `.env`. Keep secrets in Render Environment or a private local environment; do not commit or attach them. Preserve an existing encryption key for existing records.
 
 ## Use it
 
 1. Ask for videos similar to a YouTube URL or channels similar to an `@handle`. Public results use public metadata and are not personalized.
-2. Ask for a constrained playlist preview, specifying topic, total-duration ceiling, maximum video duration and optional language. Public previews are stateless.
-3. For recommendations or account analysis, sign in with Google when prompted. The default consent is OpenID identity plus YouTube read-only access.
-4. To save a playlist, create a signed-in draft, open its approval page in your own browser session and review the ordered videos. Enable playlist writes through the browser consent action, create a fresh draft if asked, then explicitly approve that exact draft.
+2. Ask for a constrained playlist preview, specifying topic and any optional duration/language preferences. Omit durations for no duration bound; the AI can choose bounds when appropriate. Public previews are stateless.
+3. For recommendations or account analysis, sign in with Google during connector setup (or when first prompted by a client using lazy sign-in). Initial Google consent requests OpenID identity plus YouTube read and write access.
+4. To save a playlist, create a signed-in draft, open its approval page in your own browser session and review the ordered videos. Initial sign-in requests playlist-write permission. Review and explicitly approve that exact draft; recovery consent is needed only if the write grant was declined or is missing.
 5. Read `playlist_status` after approval. A known partial failure can be explicitly resumed in the browser; an uncertain outcome requires manual inspection of YouTube and never auto-retries.
 
 Each Google subject has separate tokens, refreshes, profile caches, drafts, quota and approvals. Another user's connection or disconnect does not select your account or authorize your writes. The operator does not provide a shared Google account.
@@ -23,7 +25,7 @@ Each Google subject has separate tokens, refreshes, profile caches, drafts, quot
 | Public | `similar_videos`, `similar_channels`, `video_summary`, `propose_playlist`, `playlist_from_request`, `video_to_playlist` |
 | Sign-in required | `recommendations`, `engagement_analysis`, `create_playlist_draft`, `playlist_status`, `disconnect` |
 
-The server uses the official MCP Python SDK 1.30 authorization provider/routes with dynamic client registration. Its MCP scope `youtube:read` is separate from Google scopes. Playlist write consent is `https://www.googleapis.com/auth/youtube` and is requested only through the browser action. Tools cannot approve writes.
+The server uses the official MCP Python SDK 1.30 authorization provider/routes with dynamic client registration. Its MCP scope `youtube:read` is separate from Google scopes. Playlist write consent is `https://www.googleapis.com/auth/youtube` and is requested during initial Google sign-in. Tools cannot approve writes.
 
 ## Local development
 

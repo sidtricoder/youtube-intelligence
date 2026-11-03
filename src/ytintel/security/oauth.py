@@ -90,7 +90,7 @@ class AuthServer:
         )
         return self.issuer + "/oauth/start?" + urlencode({"transaction": transaction})
 
-    def complete_login(self, transaction, user_id):
+    def complete_login(self, transaction, user_id, *, approved=True):
         invalid = None
         with self.store.raw.tx() as db:
             login = self.store._get(
@@ -114,23 +114,26 @@ class AuthServer:
                     invalid = "Authorization changed; sign in again"
                 else:
                     params = AuthorizationParams.model_validate(login["params"])
-                    code = secrets.token_urlsafe(32)
-                    data = params.model_dump(mode="json")
-                    data.update(
-                        client_id=login["client_id"],
-                        expires_at=self.store.clock.now() + 120,
-                        scopes=params.scopes or [],
-                        subject=user_id,
-                        grant_generation=generation,
-                    )
-                    data.pop("state", None)
-                    self.store._put(
-                        self.store.auth_codes, digest(code), data, 120, user_id=user_id, db=db
-                    )
+                    if approved:
+                        code = secrets.token_urlsafe(32)
+                        data = params.model_dump(mode="json")
+                        data.update(
+                            client_id=login["client_id"],
+                            expires_at=self.store.clock.now() + 120,
+                            scopes=params.scopes or [],
+                            subject=user_id,
+                            grant_generation=generation,
+                        )
+                        data.pop("state", None)
+                        self.store._put(
+                            self.store.auth_codes, digest(code), data, 120, user_id=user_id, db=db
+                        )
         if invalid:
             raise AuthorizeError("invalid_request", invalid)
         parsed = urlsplit(str(params.redirect_uri))
-        query = parse_qsl(parsed.query, keep_blank_values=True) + [("code", code)]
+        query = parse_qsl(parsed.query, keep_blank_values=True) + (
+            [("code", code)] if approved else [("error", "access_denied")]
+        )
         if params.state is not None:
             query.append(("state", params.state))
         return urlunsplit(parsed._replace(query=urlencode(query)))

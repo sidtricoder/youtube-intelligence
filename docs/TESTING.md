@@ -40,7 +40,7 @@ For opt-in PostgreSQL tests, supply `TEST_DATABASE_URL` for a dedicated test end
 ## End-user acceptance
 
 1. Open the deployed root page anonymously; ask the MCP connector for similar videos and a constrained preview. Confirm public results are not personalized and the preview is not an approved persistent draft.
-2. Ask for personal recommendations. Complete sign-in through **Sign In When Needed** with Google account A. Confirm default consent is OpenID plus YouTube read-only.
+2. Ask for personal recommendations. Complete sign-in through **Sign In Now** with Google account A. Confirm default consent is OpenID plus YouTube read-only.
 3. In a separate browser/client session sign in as B. Verify B's recommendations and drafts cannot reveal A's data. Try an A draft ID from B; read, approve, resume and status must fail without revealing the draft. Disconnect B and confirm A still works.
 4. As A, create a protected draft. In A's browser, explicitly enable playlist writes, complete Google's broader consent, then create a fresh draft if consent invalidated it. Review ordered videos and constraints before approving the exact draft. Confirm only A's private playlist changes.
 5. Read status through A's MCP session, verify inserted count and the YouTube link, and confirm replay cannot create a duplicate. Do not induce ambiguous live writes merely to test retries; offline tests retain partial/uncertain behavior checks, including `test_partial_known_failure_resumes_without_duplicate_create` and `test_ambiguous_write_stops_retry`. Known partial recovery requires exact `RESUME` browser confirmation; unknown outcomes never auto-retry.

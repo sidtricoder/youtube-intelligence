@@ -77,7 +77,7 @@ async def test_oauth_check_builds_pkce_authorization_without_network_or_store(
     real_provider = module.GoogleIdentityProvider
 
     class CaptureProvider(real_provider):
-        def authorization_url(self, state, nonce, verifier, write=False):
+        def authorization_url(self, state, nonce, verifier, write=True):
             assert len(state) >= 32 and len(nonce) >= 32 and len(verifier) >= 43
             urls.append(super().authorization_url(state, nonce, verifier, write=write))
             return urls[-1]
@@ -87,7 +87,7 @@ async def test_oauth_check_builds_pkce_authorization_without_network_or_store(
     result = await module.check(output)
     query = parse_qs(urlsplit(urls[0]).query)
     assert query["code_challenge_method"] == ["S256"]
-    assert "https://www.googleapis.com/auth/youtube" not in query["scope"][0].split()
+    assert "https://www.googleapis.com/auth/youtube" in query["scope"][0].split()
     assert result["user_consent_completed"] is False
     assert "private-secret" not in output.read_text() and "code_challenge" not in output.read_text()
 

@@ -1,6 +1,5 @@
 """Composition root. MCP bearer authority and browser approval authority stay separate."""
 
-import html
 import logging
 from contextlib import asynccontextmanager
 
@@ -8,6 +7,7 @@ import httpx
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
+from . import ui
 from .api import install_api_routes
 from .config import Settings
 from .context import AnonymousContext, UserContext
@@ -121,7 +121,7 @@ def create_app(
         await client.aclose()
         raw.close()
 
-    app = FastAPI(title="YouTube Intelligence", version="2.0.1", lifespan=lifespan)
+    app = FastAPI(title="YouTube Intelligence", version="2.2.0", lifespan=lifespan)
     app.state.store, app.state.security, app.state.auth = raw, security, auth
     app.state.mcp, app.state.credentials = mcp, credentials
     app.state.context_factory, app.state.service_factory = context_factory, service_factory
@@ -134,11 +134,7 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     async def home():
-        return (
-            "<h1>YouTube Intelligence</h1><p>Add <code>"
-            + html.escape(issuer + "/mcp/")
-            + "</code> to your AI client. Public discovery needs no sign-in. Account tools prompt you to sign in with Google. Open your draft approval link to create a playlist in your account.</p>"
-        )
+        return ui.home_page(issuer)
 
     install_oauth_routes(app, auth, issuer)
 

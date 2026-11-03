@@ -15,7 +15,7 @@ We interpret “authorized user” as a role held by each signed-in user, not a 
 
 `similar_videos`, `similar_channels`, `video_summary` (metadata only), `propose_playlist`, `playlist_from_request` and `video_to_playlist` are public. Public preview tools do not persist drafts or return an approval that can authorize a write. Signing in adds profile-aware exclusion and access to personal workflows. `recommendations`, `engagement_analysis`, `create_playlist_draft`, `playlist_status` and `disconnect` are protected. Unknown operations fail closed as protected. Protocol initialization, lists, ping and notifications remain reachable without authentication; a supplied invalid bearer token is rejected even on public requests.
 
-We keep app/MCP authorization and Google authorization distinct. The MCP resource scope is `youtube:read`; it is not a Google scope and cannot authorize a playlist write. Default Google consent requests `openid` and `https://www.googleapis.com/auth/youtube.readonly`. Only an explicit browser action to enable writes requests `https://www.googleapis.com/auth/youtube`. Scope consent and approval of an exact immutable draft are separate decisions.
+We keep app/MCP authorization and Google authorization distinct. The MCP resource scope is `youtube:read`; it is not a Google scope and cannot authorize a playlist write. We request `openid`, `https://www.googleapis.com/auth/youtube.readonly` and `https://www.googleapis.com/auth/youtube` on initial sign-in, as required by the 2.1 change request. Explicit per-draft confirmation remains separate from that grant. Scope consent and approval of an exact immutable draft are separate decisions.
 
 We require isolation of identities, tokens, refresh, caches, drafts, quota and approvals. No configuration may switch the public service into an operator-account or single-user bypass. Browser sessions and MCP tokens resolve to the same subject; client arguments never select another user's identity. An unknown or another user's draft cannot be read, approved, resumed or written by guessing its ID.
 
@@ -49,3 +49,12 @@ We interpret credential lifecycle isolation to include races, not just ordinary 
 We interpret Google external Testing as a bounded evaluation stage: at most 100 test users and seven-day refresh-token expiry for this non-basic YouTube scope flow. Production use requires applicable Google verification/review and correct consent-screen configuration. We do not claim that offline tests or a reachable consent URL complete that verification.
 
 We require an explicit `RESUME` browser confirmation for known partial writes. Ambiguous/unknown write outcomes remain blocked from automatic retry; the user inspects YouTube manually. These negative and recovery tests remain mandatory even when happy-path playlist creation works.
+
+
+We interpret the 2.1.0 request as removing application-imposed playlist duration floors/ceilings
+and making caller-supplied duration bounds optional. Positive integer values remain necessary
+when a bound is provided; null/omitted values are unbounded. We still enforce explicit user/AI
+bounds and disclose API sampling/quota limits. `test_duration_freedom.py` and
+`test_mixed_mcp.py::test_initial_connection_requests_write_permission_and_long_draft_needs_no_step_up`
+cover that behavior. We request Google writes at initial sign-in as the new default, while
+per-account isolation and explicit per-draft human approval remain unchanged.

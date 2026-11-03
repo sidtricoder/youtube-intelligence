@@ -1,15 +1,15 @@
 """Browser-bound Google login, client consent and per-account draft approval routes."""
 
 import hashlib
-import html
-import json
 import re
 import secrets
 
 from fastapi import Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from mcp.server.auth.provider import AuthorizeError
 
-from .browser_policy import form_redirect_policy
+from . import ui
+from .content_negotiation import prefers_html
 from .context import UserContext
 from .errors import AppError
 from .identity import WRITE_SCOPE
@@ -69,7 +69,7 @@ def install_browser_routes(
     async def browser_login(draft: str):
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", draft):
             raise AppError("invalid_input", "Invalid draft reference", 400)
-        transaction = security.create_login({"return_path": "/approve/" + draft, "write": False})
+        transaction = security.create_login({"return_path": "/approve/" + draft, "write": True})
         return RedirectResponse("/oauth/start?transaction=" + transaction, 302)
 
     @app.get("/oauth/start")
@@ -86,9 +86,7 @@ def install_browser_routes(
         )
         security.update_login(transaction, pending)
         response = RedirectResponse(
-            idp.authorization_url(
-                transaction, pending["nonce"], pending["verifier"], pending.get("write", False)
-            ),
+            idp.authorization_url(transaction, pending["nonce"], pending["verifier"], True),
             302,
         )
         response.set_cookie(
@@ -160,24 +158,15 @@ def install_browser_routes(
         ):
             raise AppError("invalid_login", "Login expired", 400)
         client_info = await auth.get_client(pending["client_id"])
-        name = html.escape(client_info.client_name or "this AI client")
-        content = (
-            "<h1>Connect AI client</h1><p>Allow "
-            + name
-            + ' to read your YouTube profile and propose drafts? It cannot approve or create playlists.</p><form method="post"><input type="hidden" name="csrf" value="'
-            + html.escape(session["csrf"])
-            + '"><input type="hidden" name="transaction" value="'
-            + html.escape(transaction)
-            + '"><button>Allow this client</button></form>'
-        )
-
-        # Chrome applies form-action to the redirect chain, including the AI callback.
-        # Only this transaction's already validated registered callback origin is added.
-        return HTMLResponse(
-            content,
-            headers={
-                "Content-Security-Policy": form_redirect_policy(pending["params"]["redirect_uri"])
-            },
+        if client_info is None:
+            raise AppError(
+                "invalid_login", "Client registration expired; reconnect your AI client", 400
+            )
+        return ui.consent_page(
+            client_info.client_name or "this AI client",
+            pending["params"]["redirect_uri"],
+            session["csrf"],
+            transaction,
         )
 
     @app.post("/oauth/consent")
@@ -191,7 +180,20 @@ def install_browser_routes(
             or pending.get("consent_generation") != security.generation(session["user_id"])
         ):
             raise AppError("invalid_login", "Login expired", 400)
-        return RedirectResponse(auth.complete_login(transaction, session["user_id"]), 302)
+        decision = str(form.get("decision", "allow"))
+        if decision not in {"allow", "deny"}:
+            raise AppError("invalid_input", "Choose Allow or Cancel", 422)
+        try:
+            target = auth.complete_login(
+                transaction, session["user_id"], approved=decision == "allow"
+            )
+        except AuthorizeError:
+            raise AppError(
+                "invalid_login",
+                "Login expired or authorization changed. Start a fresh connection.",
+                400,
+            ) from None
+        return RedirectResponse(target, 302)
 
     @app.get("/approve/{ident}", response_class=HTMLResponse)
     async def approval_page(ident: str, request: Request):
@@ -199,37 +201,9 @@ def install_browser_routes(
         if not session:
             return RedirectResponse("/login?draft=" + ident, 302)
         draft = own_service(session).draft(ident)
-        csrf = html.escape(session["csrf"])
-        content = (
-            "<h1>Review your playlist</h1><p>Metadata below is untrusted. Review every video before confirming.</p><pre>"
-            + html.escape(json.dumps(draft, indent=2, ensure_ascii=False))
-            + "</pre>"
-        )
         tokens = security.google(session["user_id"]) or {}
-        if WRITE_SCOPE not in tokens.get("scope", "").split():
-            content += (
-                '<form method="post" action="/approve/'
-                + html.escape(ident)
-                + '/enable-writes"><input type="hidden" name="csrf" value="'
-                + csrf
-                + '"><button>Enable playlist writes with the same Google account</button></form>'
-            )
-            return HTMLResponse(
-                content,
-                headers={
-                    "Content-Security-Policy": form_redirect_policy(
-                        "https://accounts.google.com/o/oauth2/v2/auth"
-                    )
-                },
-            )
-        phrase = "RESUME" if draft["status"] == "partial" else "CREATE"
-        return (
-            content
-            + '<form method="post"><input type="hidden" name="csrf" value="'
-            + csrf
-            + '"><label>Type '
-            + phrase
-            + ' to confirm these exact videos <input name="confirmation" autocomplete="off"></label><button>Confirm playlist in my account</button></form>'
+        return ui.approval_page(
+            draft, session["csrf"], WRITE_SCOPE in tokens.get("scope", "").split()
         )
 
     @app.post("/approve/{ident}/enable-writes")
@@ -257,8 +231,13 @@ def install_browser_routes(
             raise AppError("confirmation_required", "Type the displayed confirmation phrase", 403)
         credentials.require_write(session["user_id"])
         await credentials.access(session["user_id"])
-        return await (
+        result = await (
             service.resume(ident, confirmation)
             if phrase == "RESUME"
             else service.approve(ident, confirmation)
         )
+        if prefers_html(request.headers.get("accept", "")):
+            response = ui.result_page(result)
+            response.headers["Vary"] = "Accept"
+            return response
+        return result

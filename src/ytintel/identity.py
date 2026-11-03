@@ -34,7 +34,7 @@ class IdentityProvider(Protocol):
         state: str,
         nonce: str,
         verifier: str,
-        write: bool = False,
+        write: bool = True,
     ) -> str: ...
 
     async def exchange(self, code: str, verifier: str, nonce: str) -> GoogleIdentity: ...
@@ -64,7 +64,7 @@ class GoogleIdentityProvider:
         state: str,
         nonce: str,
         verifier: str,
-        write: bool = False,
+        write: bool = True,
     ) -> str:
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
         scopes = ["openid", READ_SCOPE]

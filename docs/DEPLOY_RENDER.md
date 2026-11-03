@@ -6,7 +6,7 @@ Deploy source from a private GitHub repository, use Neon for persistence, and en
 
 Push the Dockerfile, lockfile, project metadata, source, scripts and deployment configuration. Confirm `.env` and local data are ignored and untracked before pushing. Keep existing local `.env` and data untouched. If secrets were previously committed, remove them from tracking and rotate exposed secrets; ignoring a file does not erase history.
 
-Create/use a Google OAuth **Web application** client and enable YouTube Data API v3. Configure the external consent screen and test users. Default app consent is `openid` and `https://www.googleapis.com/auth/youtube.readonly`; the browser write-enable action alone requests `https://www.googleapis.com/auth/youtube`. Each end user supplies their own consent; the operator never connects an account for everyone.
+Create/use a Google OAuth **Web application** client and enable YouTube Data API v3. Configure the external consent screen and test users. Initial consent requests `openid`, `https://www.googleapis.com/auth/youtube.readonly` and `https://www.googleapis.com/auth/youtube`. Google grants are checked; declined or legacy read-only grants have explicit write-permission recovery. Each end user supplies their own consent; the operator never connects an account for everyone.
 
 Testing mode is limited to 100 test users and refresh tokens for this scope flow may expire after seven days. Production distribution requires applicable Google verification/review. Check actual project quota settings: the application defaults to 10,000 general units/day and a separate 100 `search.list` calls/day ceiling; these are local caps, not guaranteed upstream availability.
 
@@ -60,7 +60,7 @@ In the custom remote connector dialog choose:
 |---|---|
 | Server URL | `https://your-service.onrender.com/mcp/` |
 | Transport | Streamable HTTP |
-| Authentication | Sign In When Needed |
+| Authentication | Sign In Now |
 | Client registration | Register Automatically |
 
 Use the trailing slash. Do not append `?key=`, supply a static bearer token/header or paste Google secrets. The server advertises SDK dynamic client registration with HTTPS/loopback redirect validation. CIMD is unsupported and is not advertised. The root protected-resource metadata and OAuth challenge let the client discover sign-in when protected work is requested. MCP scope `youtube:read` is distinct from Google's consent scopes.
@@ -75,7 +75,7 @@ Then:
 
 > Preview a one-hour Python playlist, with no video over 15 minutes, language en.
 
-Public previews are stateless and cannot be approved as user drafts. Next ask for personal recommendations and complete Google sign-in as your own account when prompted. For a real playlist, create an authenticated draft, open its approval page in that same user's browser session, enable writes through the explicit POST action on that draft’s approval page, review a fresh exact draft and approve it. The AI cannot approve on your behalf. Ask for its status afterward.
+Public previews are stateless and cannot be approved as user drafts. Next ask for personal recommendations and complete Google sign-in as your own account when prompted. For a real playlist, create an authenticated draft, open its approval page in that same user's browser session and approve the exact draft. Read/write Google permission is requested during initial connection; enable-writes recovery is shown only if writes were declined or missing. The AI cannot approve on your behalf. Ask for its status afterward.
 
 Repeat with a second account in an independent browser session to confirm private results, draft/status access and disconnect are isolated. See TESTING.md for the complete acceptance sequence. Successful public discovery alone does not verify refresh tokens, production Google approval or live writes.
 
@@ -93,3 +93,5 @@ Render free instances may sleep and cold-start, and Neon free plans have resourc
 | Connector timeout after idle | Wake the hosted root page, then reconnect; inspect deployment health if it persists |
 
 Run one application process/worker per deployment. The launcher explicitly uses one worker; in-process request rate windows require one instance (daily quota and token rotation are database-atomic). Add a distributed rate limiter before horizontal scaling.
+
+For the 2.1.0 scope/optional-duration upgrade and existing-account reconnection steps, see UPGRADE_2_1_0.md.
