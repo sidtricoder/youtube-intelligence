@@ -1,4 +1,4 @@
-# Final multi-account/lazy-auth report — version 2.0.0
+# Final multi-account/lazy-auth report — version 2.0.1
 
 ## Result and verification
 
@@ -11,12 +11,12 @@ Observed final checks (Python 3.12.14, MCP SDK 1.30.0):
 
 | Check | Result |
 |---|---|
-| `pytest --cov=ytintel --cov-report=term --cov-fail-under=85` | **211 passed, 10 skipped, 0 failed; 91.09% statement coverage** |
+| `pytest --cov=ytintel --cov-report=term --cov-fail-under=85` | **220 passed, 10 skipped, 0 failed; 91.22% statement coverage** |
 | `ruff check src tests scripts` | Passed |
-| `ruff format --check src tests scripts` | Passed (61 Python files) |
+| `ruff format --check src tests scripts` | Passed (63 Python files) |
 | Official MCP client over real TCP | Anonymous and two interleaved synthetic Google identities; FR-1 through FR-5, OAuth/PKCE, refresh replay, isolation and own-browser approvals passed |
 | Chromium `node scripts/browser_smoke.cjs` | Own-session/CSRF form, wrong phrase refusal, typed CREATE, completed playlist, replay 409 and mobile page passed |
-| Wheel build and isolated installed import | Version 2.0.0 built; imported from site-packages; health and both discovery documents passed |
+| Wheel build and isolated installed import | Version 2.0.1 built; imported from site-packages; health and both discovery documents passed |
 | SQLite migration/reference DDL | Idempotent migration tested; reference DDL applied twice below during archive validation |
 | Secret-pattern/source scan | No configured API keys, database passwords or private-key material found; no `.env`/database in archive |
 | Independent scoped security review | Credential races and stale authority fixed; 50 focused regressions passed; no remaining critical/important finding in final scoped recheck |
@@ -162,3 +162,12 @@ The output keeps the original top-level `youtube-intelligence-main/` layout.
 - `src/ytintel/auth.py`
 - `src/ytintel/owner.html`
 
+
+
+## 2.0.1 corrective update
+
+See UPGRADE_2_0_1.md for exact Render/Google settings and a fresh sign-in sequence. Added
+`browser_policy.py` and policy regressions; updated `http_boundary.py`, `web.py`, the Windows
+bootstrap assertion and cross-platform exclusive-create check. Expanded the Chromium regression
+through a real form POST, registered cross-origin callback, token exchange and intercepted Google
+write-consent page. Native Windows CI remains to be re-run by GitHub Actions. No `.env`/data changed.

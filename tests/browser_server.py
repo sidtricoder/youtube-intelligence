@@ -1,16 +1,20 @@
 """Browser-test composition only. Production has no synthetic runtime mode."""
 
+import base64
+import hashlib
 import os
 import tempfile
 import time
 from pathlib import Path
 
 from cryptography.fernet import Fernet
+from mcp.shared.auth import OAuthClientInformationFull
+from pydantic import AnyUrl
 
 from tests.fakes import FixtureProvider
 from ytintel.app import create_app
 from ytintel.config import Settings
-from ytintel.identity import WRITE_SCOPE
+from ytintel.identity import READ_SCOPE, WRITE_SCOPE
 
 
 def create_browser_app():
@@ -48,5 +52,55 @@ def create_browser_app():
     @app.get("/__fixture")
     async def synthetic_fixture():
         return app.state.browser_fixture
+
+    @app.get("/__consent_fixture")
+    async def synthetic_consent_fixture():
+        redirect = "http://127.0.0.1:8000/__client_callback"
+        client = OAuthClientInformationFull(
+            client_id="browser-ai",
+            client_name="Browser AI",
+            redirect_uris=[AnyUrl(redirect)],
+            scope="youtube:read",
+            token_endpoint_auth_method="none",
+        )
+        await app.state.auth.register_client(client)
+        verifier = "v" * 64
+        transaction = app.state.security.create_login(
+            {
+                "client_id": client.client_id,
+                "consent_user_id": user,
+                "consent_generation": app.state.security.generation(user),
+                "params": {
+                    "state": "browser-state",
+                    "redirect_uri": redirect,
+                    "redirect_uri_provided_explicitly": True,
+                    "resource": "http://localhost:8000/mcp/",
+                    "scopes": ["youtube:read"],
+                    "code_challenge": base64.urlsafe_b64encode(
+                        hashlib.sha256(verifier.encode()).digest()
+                    )
+                    .decode()
+                    .rstrip("="),
+                },
+            }
+        )
+        return {
+            "url": "/oauth/consent?transaction=" + transaction,
+            "verifier": verifier,
+            "client_id": client.client_id,
+            "redirect_uri": redirect,
+        }
+
+    @app.get("/__write_fixture")
+    async def synthetic_write_fixture():
+        tokens = app.state.security.google(user)
+        tokens["scope"] = READ_SCOPE
+        app.state.security.save_google(user, tokens)
+        cookie, csrf = app.state.security.create_session(user)
+        return {"cookie": cookie, "csrf": csrf}
+
+    @app.get("/__client_callback")
+    async def synthetic_client_callback():
+        return {"status": "AI client received authorization code"}
 
     return app

@@ -55,8 +55,42 @@ async function main() {
     await page.goto(approval);
     await page.setViewportSize({ width: 390, height: 844 });
     assert(await page.locator('h1').isVisible());
+    // A real form POST must follow its OAuth redirect to a different origin.
+    const consent = await (await fetch(base + '/__consent_fixture')).json();
+    const consentPage = await page.goto(base + consent.url);
+    assert(consentPage.headers()['content-security-policy'].includes(new URL(consent.redirect_uri).origin));
+    const cspErrors = [];
+    page.on('console', msg => { if (msg.type() === 'error' && /Content Security Policy|form-action/i.test(msg.text())) cspErrors.push(msg.text()); });
+    await page.getByRole('button', { name: 'Allow this client' }).click();
+    try { await page.waitForURL('http://127.0.0.1:8000/__client_callback?**', { timeout: 4000 }); } catch { throw new Error(JSON.stringify({url:page.url().split('?')[0],body:(await page.locator('body').textContent()).slice(0,500),cspErrors})); }
+    const code = new URL(page.url()).searchParams.get('code');
+    assert(code, 'OAuth callback must contain a code');
+    const token = await fetch(base + '/token', { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: new URLSearchParams({ grant_type: 'authorization_code', client_id: consent.client_id,
+        code, code_verifier: consent.verifier, redirect_uri: consent.redirect_uri, resource: base + '/mcp/' }) });
+    assert.equal(token.status, 200);
+    // Explicit write enablement also follows a form redirect, this time to Google.
+    const readOnly = await (await fetch(base + '/__write_fixture')).json();
+    await context.addCookies([{ name: 'yt_session', value: readOnly.cookie, url: base,
+      httpOnly: true, sameSite: 'Lax' }]);
+    const nextDraft = await (await fetch(base + '/api/drafts', { method: 'POST', headers,
+      body: JSON.stringify({ topic: 'Python', total_seconds: 1800, max_seconds: 900 }) })).json();
+    let googleIntercepted = false;
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Fetch.enable', { patterns: [{ urlPattern: 'https://accounts.google.com/*' }] });
+    cdp.on('Fetch.requestPaused', async event => {
+      googleIntercepted = true;
+      await cdp.send('Fetch.fulfillRequest', { requestId: event.requestId, responseCode: 200,
+        responseHeaders: [{name:'Content-Type', value:'text/html'}],
+        body: Buffer.from('<p>Synthetic Google write consent</p>').toString('base64') });
+    });
+    await page.goto(base + '/approve/' + nextDraft.id);
+    await page.getByRole('button', {name: 'Enable playlist writes with the same Google account'}).click();
+    try { await page.waitForURL(url => url.origin === 'https://accounts.google.com', {timeout:4000}); } catch { throw new Error(JSON.stringify({stage:'Google write',url:page.url().split('?')[0],googleIntercepted,cspErrors})); }
+    assert((await page.locator('body').textContent()).includes('Synthetic Google write consent'));
+    assert.deepEqual(cspErrors, []);
     assert.deepEqual(errors, []);
-    console.log('PASS: Chromium own-session approval, CSRF form, typed confirmation, no write on wrong phrase, complete playlist, replay refusal, mobile page; no JavaScript errors.');
+    console.log('PASS: Chromium own-session approval, CSRF form, typed confirmation, no write on wrong phrase, complete playlist, replay refusal, mobile page, cross-origin AI consent callback/token exchange and Google write consent; no CSP violations or JavaScript errors.');
   } finally {
     if (browser) await browser.close();
     server.kill();

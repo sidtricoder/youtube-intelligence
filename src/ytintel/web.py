@@ -9,6 +9,7 @@ import secrets
 from fastapi import Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from .browser_policy import form_redirect_policy
 from .context import UserContext
 from .errors import AppError
 from .identity import WRITE_SCOPE
@@ -160,7 +161,7 @@ def install_browser_routes(
             raise AppError("invalid_login", "Login expired", 400)
         client_info = await auth.get_client(pending["client_id"])
         name = html.escape(client_info.client_name or "this AI client")
-        return (
+        content = (
             "<h1>Connect AI client</h1><p>Allow "
             + name
             + ' to read your YouTube profile and propose drafts? It cannot approve or create playlists.</p><form method="post"><input type="hidden" name="csrf" value="'
@@ -168,6 +169,15 @@ def install_browser_routes(
             + '"><input type="hidden" name="transaction" value="'
             + html.escape(transaction)
             + '"><button>Allow this client</button></form>'
+        )
+
+        # Chrome applies form-action to the redirect chain, including the AI callback.
+        # Only this transaction's already validated registered callback origin is added.
+        return HTMLResponse(
+            content,
+            headers={
+                "Content-Security-Policy": form_redirect_policy(pending["params"]["redirect_uri"])
+            },
         )
 
     @app.post("/oauth/consent")
@@ -197,13 +207,20 @@ def install_browser_routes(
         )
         tokens = security.google(session["user_id"]) or {}
         if WRITE_SCOPE not in tokens.get("scope", "").split():
-            return (
-                content
-                + '<form method="post" action="/approve/'
+            content += (
+                '<form method="post" action="/approve/'
                 + html.escape(ident)
                 + '/enable-writes"><input type="hidden" name="csrf" value="'
                 + csrf
                 + '"><button>Enable playlist writes with the same Google account</button></form>'
+            )
+            return HTMLResponse(
+                content,
+                headers={
+                    "Content-Security-Policy": form_redirect_policy(
+                        "https://accounts.google.com/o/oauth2/v2/auth"
+                    )
+                },
             )
         phrase = "RESUME" if draft["status"] == "partial" else "CREATE"
         return (

@@ -121,7 +121,7 @@ def create_app(
         await client.aclose()
         raw.close()
 
-    app = FastAPI(title="YouTube Intelligence", version="2.0.0", lifespan=lifespan)
+    app = FastAPI(title="YouTube Intelligence", version="2.0.1", lifespan=lifespan)
     app.state.store, app.state.security, app.state.auth = raw, security, auth
     app.state.mcp, app.state.credentials = mcp, credentials
     app.state.context_factory, app.state.service_factory = context_factory, service_factory

@@ -5,6 +5,7 @@ from urllib.parse import parse_qs
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from .browser_policy import form_redirect_policy
 from .errors import AppError
 from .policy import MCP_SCOPE
 
@@ -36,9 +37,9 @@ def install_http_boundary(app, auth, issuer):
                 "Referrer-Policy": "strict-origin",
                 "Cache-Control": "no-store",
                 "X-Frame-Options": "DENY",
-                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
             }
         )
+        response.headers.setdefault("Content-Security-Policy", form_redirect_policy())
         return response
 
     @app.exception_handler(AppError)

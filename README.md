@@ -2,6 +2,8 @@
 
 Discover related YouTube videos and channels publicly, then sign in with your own Google account for recommendations, engagement analysis and reviewed private playlists. The production provider uses the official YouTube Data API v3. Summaries use title/description metadata, not transcripts or claims of watching a video.
 
+For the Windows CI and consent-form fixes, follow [the 2.0.1 upgrade steps](docs/UPGRADE_2_0_1.md).
+
 Start with [Render + Neon deployment](docs/DEPLOY_RENDER.md). The hosted MCP URL is **`https://<host>/mcp/`**. In Claude choose **Streamable HTTP**, **Sign In When Needed** and **Register Automatically**. Use the plain URL with its trailing slash; no static bearer key, query key or custom header is needed. Sign-in is requested when you use protected features.
 
 The handoff contains `.env.example`, never a configured `.env`. Keep secrets in Render Environment or a private local environment; do not commit or attach them. Preserve an existing encryption key for existing records.

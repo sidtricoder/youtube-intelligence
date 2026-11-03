@@ -40,3 +40,17 @@ Quota is reserved transactionally before provider calls. Attempted upstream call
 Trust proxy headers only from explicitly configured ingress addresses. Set `YT_TRUSTED_PROXIES` to explicit comma-separated IPs/CIDRs only (empty by default), never `*`; spoofed forwarding headers would defeat IP quotas and origin assumptions. Configure the public HTTPS origin and accepted MCP host/origin explicitly. Do not enable wildcard CORS. CSP, frame denial, `nosniff` and `strict-origin` referrer headers (no path/query disclosure) protect the browser shell. Keep access/debug logs from capturing bearer credentials, OAuth codes, query metadata or personal responses.
 
 Only `.env.example` belongs in source/handoff packages. Existing `.env` and data must not be read into reports, edited or included in archives. Store database URLs, Google API/client secrets and the Fernet key in Render's secret environment. Report security issues privately without credentials or personal account data.
+
+
+## Browser form redirects (2.0.1)
+
+The default form policy is self-only. The AI-client consent page adds only the origin of the
+registered, validated callback for that pending transaction; the write-enable page additionally
+permits Google's accounts origin. Chrome checks form redirects against this policy. No wildcard,
+arbitrary query parameter, other client's callback, script permission or global HTTPS allowance
+is introduced. Browser regressions cover the form POST, cross-origin callback, code exchange and
+Google write-consent navigation; all upstream Google content in those tests is intercepted offline.
+
+On POSIX, new local configuration requests owner-only mode 0600. Windows stat mode bits do not
+represent NTFS access-control lists; privacy there depends on the containing directory's Windows
+ACLs. The functional bootstrap, Fernet and exclusive-create checks run on both CI platforms.
