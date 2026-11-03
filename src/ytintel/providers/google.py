@@ -5,16 +5,33 @@ import json
 
 import httpx
 
+from ..context import AnonymousContext
 from ..domain import Video, channel_ref, duration
 from ..errors import AppError
 from ..quota import active_ticket
+from ..tenancy import PublicStore
 
 BASE = "https://www.googleapis.com/youtube/v3/"
 
 
 class GoogleProvider:
-    def __init__(self, client, token, store, public_api_key=""):
+    def __init__(
+        self,
+        client,
+        token,
+        store,
+        public_api_key="",
+        *,
+        context=None,
+        public_store=None,
+        on_unauthorized=None,
+    ):
         self.client, self.token, self.store = client, token, store
+        self.context = context
+        self.on_unauthorized = on_unauthorized
+        self.public_store = public_store or (
+            PublicStore(store.raw) if hasattr(store, "raw") else store
+        )
         self.public_api_key = public_api_key
 
     async def request(self, endpoint, params=None, body=None):
@@ -23,10 +40,6 @@ class GoogleProvider:
             "cache:"
             + hashlib.sha256(json.dumps([endpoint, params], sort_keys=True).encode()).hexdigest()
         )
-        if method == "GET":
-            cached = self.store.get(key)
-            if cached is not None:
-                return cached
         parameters = dict(params or {})
         public = method == "GET" and (
             endpoint == "search"
@@ -36,14 +49,21 @@ class GoogleProvider:
                 and not parameters.get("mine")
             )
         )
+        cache_store = self.public_store if public else self.store
+        if not public and isinstance(self.context, AnonymousContext):
+            raise AppError("authentication_required", "Sign in to access account data", 401)
+        if method == "GET":
+            cached = cache_store.get(key)
+            if cached is not None:
+                return cached
         headers = {}
-        if public and self.public_api_key:
+        if public:
+            if not self.public_api_key:
+                raise AppError("public_api_key_required", "Public API key is required", 503)
             headers["X-Goog-Api-Key"] = self.public_api_key
-            # Connected users retain access to their private/unlisted metadata.
-            if self.store.get("oauth:tokens"):
-                headers["Authorization"] = "Bearer " + await self.token()
         else:
-            headers["Authorization"] = "Bearer " + await self.token()
+            credentials = self.context.credentials if self.context is not None else self.token
+            headers["Authorization"] = "Bearer " + await credentials()
         ticket = active_ticket.get()
         if ticket is None:
             raise AppError("quota_reservation", "API calls require a workflow reservation", 500)
@@ -65,6 +85,8 @@ class GoogleProvider:
                 "YouTube connection failed; write outcome may be unknown",
                 503,
             ) from None
+        if r.status_code == 401 and not public and self.on_unauthorized is not None:
+            await self.on_unauthorized()
         if r.status_code >= 400:
             try:
                 errors = r.json().get("error", {}).get("errors", [])
@@ -96,7 +118,7 @@ class GoogleProvider:
             raise AppError(code, "YouTube request failed: " + code, status)
         result = r.json()
         if method == "GET":
-            self.store.put(key, result, ttl=300)
+            cache_store.put(key, result, ttl=300)
         return result
 
     async def pages(self, endpoint, params, max_pages=2):

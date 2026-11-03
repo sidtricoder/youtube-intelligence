@@ -14,12 +14,11 @@ def server_options(environment=None):
     return {
         "host": "0.0.0.0" if hosted else "127.0.0.1",
         "port": port,
+        "workers": 1,
         "access_log": False,
         "log_level": "warning",
-        "proxy_headers": True,
-        "forwarded_allow_ips": env.get(
-            "FORWARDED_ALLOW_IPS", "*" if env.get("RENDER_EXTERNAL_URL") else "127.0.0.1"
-        ),
+        "proxy_headers": False,
+        "forwarded_allow_ips": env.get("FORWARDED_ALLOW_IPS", ""),
     }
 
 

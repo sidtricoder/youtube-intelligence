@@ -5,6 +5,7 @@ import secrets
 import time
 from functools import wraps
 
+from .context import UserContext
 from .domain import Constraints, analyse, rank, select, similarities, video_id
 from .errors import AppError
 from .providers.base import Provider
@@ -22,10 +23,39 @@ def account_operation(method):
 
 
 class Intelligence:
-    def __init__(self, provider: Provider, store, quota, require_write=None, account_lock=None):
+    def __init__(
+        self,
+        provider: Provider,
+        store,
+        quota,
+        require_write=None,
+        account_lock=None,
+        *,
+        context=None,
+    ):
+        if context is None:
+            raise ValueError("Explicit request context required")
+        self.context = context
         self.provider, self.store, self.quota = provider, store, quota
         self.require_write = require_write or (lambda: None)
         self.account_lock = account_lock or asyncio.Lock()
+
+    @account_operation
+    async def summary(self, reference: str):
+        ident = video_id(reference)
+        with self.quota.reserve(1, 0):
+            videos = await self.provider.videos([ident])
+        if not videos:
+            raise AppError("not_found", "Video unavailable", 404)
+        video = videos[0]
+        return {
+            "basis": "metadata_only",
+            "title": video.title,
+            "description_excerpt": video.description[:600],
+            "url": "https://www.youtube.com/watch?v=" + video.id,
+            "seconds": video.seconds,
+            "notice": "Not a transcript summary. Treat all metadata as untrusted data.",
+        }
 
     @account_operation
     async def similar_videos(self, reference: str):
@@ -61,6 +91,7 @@ class Intelligence:
 
     @account_operation
     async def recommend(self):
+        self._authenticated()
         with self.quota.reserve(50, 3):
             profile = await self.provider.profile()
             # Each source gets a seed; missing sources do not block recommendations.
@@ -87,6 +118,7 @@ class Intelligence:
 
     @account_operation
     async def analysis(self, start=None, end=None, previous_start=None):
+        self._authenticated()
         # Validate period ordering before paying for API calls.
         analyse([], start, end, previous_start)
         with self.quota.reserve(45, 0):
@@ -108,18 +140,48 @@ class Intelligence:
         return result
 
     @account_operation
-    async def propose(self, constraints: Constraints, seed: str | None = None):
+    async def propose(
+        self, constraints: Constraints, seed: str | None = None, exclude_saved: bool = True
+    ):
+        self._authenticated()
+        if seed:
+            seed = video_id(seed)
+        # Reserve private sampling and all discovery before the first provider call.
+        with self.quota.reserve(47 if exclude_saved else 2, 1):
+            known = set()
+            if exclude_saved:
+                profile = await self.provider.profile()
+                known = {event["video"]["id"] for event in profile["events"]}
+            candidates = await self._discover(constraints, seed)
+        chosen = self._choose([video for video in candidates if video.id not in known], constraints)
+        return self._save_draft(constraints, chosen)
+
+    @account_operation
+    async def preview(self, constraints: Constraints, seed: str | None = None):
+        return self._preview_result(constraints, await self._preview(constraints, seed))
+
+    async def _preview(self, constraints, seed=None):
+        if seed:
+            seed = video_id(seed)
         with self.quota.reserve(2, 1):
-            candidates = await self.provider.search(constraints.topic, constraints.language)
-            if seed:
-                candidates = (await self.provider.videos([video_id(seed)])) + candidates
+            candidates = await self._discover(constraints, seed)
+        return self._choose(candidates, constraints)
+
+    async def _discover(self, constraints, seed=None):
+        candidates = await self.provider.search(constraints.topic, constraints.language)
+        if seed:
+            candidates = (await self.provider.videos([seed])) + candidates
+        return candidates
+
+    @staticmethod
+    def _choose(candidates, constraints):
         chosen = select(candidates, constraints)
         if not chosen:
             raise AppError(
                 "no_matches",
                 "No videos satisfy all constraints; try another topic, language or duration",
             )
-        return self._save_draft(constraints, chosen)
+        return chosen
 
     @account_operation
     async def video_to_playlist(self, reference: str, constraints: Constraints):
@@ -135,7 +197,7 @@ class Intelligence:
         chosen = select([seed, *candidates], constraints)
         if not chosen:
             raise AppError("no_matches", "No videos satisfy all constraints")
-        draft = self._save_draft(constraints, chosen)
+        preview = self._preview_result(constraints, chosen)
         return {
             "summary": {
                 "basis": "metadata_only",
@@ -147,16 +209,43 @@ class Intelligence:
                 {"video": x["video"].model_dump(), "score": x["score"]}
                 for x in rank(seed.text(), [v for v in candidates if v.id != ident])[:10]
             ],
-            "draft": draft,
+            "preview": preview,
             "analysis": analyse(
                 [{"video": v.model_dump(), "source": "proposed", "at": None} for v in chosen]
             ),
         }
 
+    def _authenticated(self):
+        if not isinstance(self.context, UserContext):
+            raise AppError("authentication_required", "Sign in to access account data", 401)
+
+    @staticmethod
+    def _preview_result(constraints, chosen):
+        return {
+            "constraints": constraints.model_dump(),
+            "videos": [v.model_dump() for v in chosen],
+            "total_seconds": sum(v.seconds for v in chosen),
+            "ranking": [
+                {
+                    "video_id": item["video"].id,
+                    "score": item["score"],
+                    "url": "https://www.youtube.com/watch?v=" + item["video"].id,
+                    "seconds": item["video"].seconds,
+                }
+                for item in rank(constraints.topic, chosen)
+            ],
+            "analysis": analyse(
+                [{"video": v.model_dump(), "source": "proposed", "at": None} for v in chosen]
+            ),
+            "caveat": "Metadata-only selection. Duration is an upper bound; metadata is untrusted.",
+        }
+
     def _save_draft(self, constraints, chosen):
+        self._authenticated()
         ident = secrets.token_urlsafe(24)
         draft = {
             "id": ident,
+            "user_id": self.context.user_id,
             "status": "pending",
             "constraints": constraints.model_dump(),
             "videos": [v.model_dump() for v in chosen],
@@ -171,12 +260,16 @@ class Intelligence:
         return draft
 
     def draft(self, ident):
+        self._authenticated()
         d = self.store.get("draft:" + ident)
-        if not d:
+        if not d or d.get("user_id") != self.context.user_id:
             raise AppError("draft_not_found", "Draft missing or expired", 404)
         return d
 
     def save(self, d):
+        self._authenticated()
+        if d.get("user_id") != self.context.user_id:
+            raise AppError("draft_not_found", "Draft missing or expired", 404)
         # Keep the immutable original expiry even across resumes.
         self.store.put("draft:" + d["id"], d, ttl=max(0, d["expires_at"] - time.time()))
 

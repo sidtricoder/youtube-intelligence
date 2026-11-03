@@ -30,10 +30,12 @@ async def check(output: Path):
                 "database_url_pooled": None,
                 "units_per_day": 10,
                 "searches_per_day": 3,
+                "anonymous_units_per_day": 10,
             }
         )
         app = create_app(settings)
-        service = app.state.service
+        context = await app.state.context_factory(None, "127.0.0.1")
+        service = app.state.service_factory(context)
 
         async def record(name, run):
             try:
@@ -65,56 +67,32 @@ async def check(output: Path):
             assert rows
             return {"ranked_candidates": len(rows)}
 
-        async def draft():
-            d = await service.propose(
+        async def preview():
+            d = await service.preview(
                 Constraints(
                     topic="Python programming tutorial", total_seconds=3600, max_seconds=1200
                 )
             )
-            assert d["status"] == "pending"
             assert 0 < d["total_seconds"] <= 3600
             assert all(0 < v["seconds"] <= 1200 for v in d["videos"])
             return {
                 "preview_videos": len(d["videos"]),
                 "total_seconds": d["total_seconds"],
-                "status": d["status"],
+                "persisted_draft": False,
             }
-
-        async def oauth_url():
-            from urllib.parse import parse_qs, urlparse
-
-            url, state, binding = app.state.oauth.start(False)
-            query = parse_qs(urlparse(url).query)
-            assert query["client_id"] == [settings.google_client_id]
-            assert query["redirect_uri"] == [settings.redirect_uri]
-            assert app.state.oauth.consume_state(state, binding)
-            return {
-                "redirect_uri": query["redirect_uri"][0],
-                "pkce": query["code_challenge_method"][0],
-            }
-
-        async def private_guard():
-            try:
-                await app.state.oauth.access_token()
-            except AppError as exc:
-                assert exc.code == "reauthorization_required"
-                return {"unauthorized_personal_access": "blocked as required"}
-            raise AssertionError("Fresh test database unexpectedly has user authorization")
 
         async with app.router.lifespan_context(app):
             await record("Official videos.list with supplied API key", direct_video)
             await record("FR1 live similar videos", similar_video)
             await record("FR2 live similar channels", similar_channel)
-            await record("FR5 live constrained playlist preview (no write)", draft)
-            await record("OAuth client configuration and fixed callback", oauth_url)
-            await record("Personal data OAuth guard (no fallback)", private_guard)
+            await record("FR5 live constrained playlist preview (no write)", preview)
             report["quota"] = service.quota.status()
         report["blocked_checks"] = [
-            {"name": "FR3 live personal recommendations", "reason": "Owner OAuth sign-in required"},
-            {"name": "FR4 live personal analysis", "reason": "Owner OAuth sign-in required"},
+            {"name": "FR3 live personal recommendations", "reason": "User OAuth sign-in required"},
+            {"name": "FR4 live personal analysis", "reason": "User OAuth sign-in required"},
             {
                 "name": "Live playlist creation and insertion",
-                "reason": "Owner OAuth sign-in and exact draft confirmation required",
+                "reason": "User OAuth sign-in and browser draft confirmation required",
             },
         ]
     report["passed"] = sum(c["status"] == "PASS" for c in report["checks"])

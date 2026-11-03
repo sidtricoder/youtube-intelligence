@@ -4,7 +4,6 @@ import argparse
 import getpass
 import json
 import os
-import secrets
 import tempfile
 from pathlib import Path
 
@@ -24,8 +23,6 @@ def configure(credentials: Path, destination: Path = Path(".env"), api_key: str 
     values.pop("YT_MODE", None)
     values.setdefault("YT_DB_PATH", "data/ytintel.db")
     values.setdefault("YT_ENCRYPTION_KEY", Fernet.generate_key().decode())
-    values.setdefault("YT_API_KEY", secrets.token_urlsafe(48))
-    values.setdefault("YT_OWNER_KEY", secrets.token_urlsafe(48))
     values.setdefault("YT_REDIRECT_URI", "http://localhost:8000/oauth/callback")
     values.setdefault("YT_UNITS_PER_DAY", "10000")
     values.setdefault("YT_SEARCHES_PER_DAY", "100")

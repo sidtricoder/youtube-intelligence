@@ -21,6 +21,4 @@ jobs:
       - run: python -m pip install --no-deps -e .
       - run: python scripts/live_smoke.py
         env:
-          LIVE_CLIENT_ID: ${{ secrets.LIVE_CLIENT_ID }}
-          LIVE_CLIENT_SECRET: ${{ secrets.LIVE_CLIENT_SECRET }}
-          LIVE_REFRESH_TOKEN: ${{ secrets.LIVE_REFRESH_TOKEN }}
+          LIVE_YOUTUBE_API_KEY: ${{ secrets.LIVE_YOUTUBE_API_KEY }}

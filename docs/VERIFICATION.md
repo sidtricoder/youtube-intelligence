@@ -1,3 +1,9 @@
+# Historical verification archive
+
+**The results below describe earlier single-owner revisions. They are retained as historical evidence only and do not verify the current multi-account OAuth release.** Follow [TESTING.md](TESTING.md) for current commands, requirement traceability and end-user acceptance. In particular, old static-key, owner-key, URL-key and configured-secret handoff claims are superseded. No current passing count, live user consent, production Google verification or private playlist write is asserted by this archive.
+
+---
+
 # Verification — v1.2 Render + Neon
 
 This version implements actual PostgreSQL persistence, not just a DATABASE_URL setting around a SQLite-only application. The supplied direct and pooled URLs are present only in the private `.env`. Runtime prefers the pooled URL and preserves its TLS/channel-binding options. A failed configured database never falls back to SQLite.

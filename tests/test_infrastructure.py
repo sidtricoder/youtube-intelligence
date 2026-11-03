@@ -2,11 +2,14 @@ import httpx
 import pytest
 from cryptography.fernet import Fernet
 
-from ytintel.auth import OAuth
+from ytintel.context import UserContext
 from ytintel.errors import AppError
+from ytintel.identity import GoogleIdentityProvider
 from ytintel.providers.google import GoogleProvider
 from ytintel.quota import Quota
+from ytintel.security.store import SecurityStore
 from ytintel.store import Store
+from ytintel.tenancy import ScopedStore
 
 
 @pytest.fixture
@@ -49,7 +52,12 @@ async def test_upstream_error_mapping(store, reason, status, code):
     transport = httpx.MockTransport(
         lambda r: httpx.Response(status, json={"error": {"errors": [{"reason": reason}]}})
     )
-    provider = GoogleProvider(httpx.AsyncClient(transport=transport), lambda: token(), store)
+    provider = GoogleProvider(
+        httpx.AsyncClient(transport=transport),
+        lambda: token(),
+        store,
+        public_api_key="synthetic-key",
+    )
     with Quota(store).reserve(5, 1):
         with pytest.raises(AppError) as e:
             await provider.videos(["aaaaaaaaaaa"])
@@ -85,7 +93,10 @@ async def test_search_batch_details_cache_and_charge(store):
         )
 
     p = GoogleProvider(
-        httpx.AsyncClient(transport=httpx.MockTransport(handler)), lambda: token(), store
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        lambda: token(),
+        store,
+        public_api_key="synthetic-key",
     )
     q = Quota(store)
     with q.reserve(5, 2):
@@ -96,31 +107,23 @@ async def test_search_batch_details_cache_and_charge(store):
 
 
 async def test_expired_access_refresh_and_invalid_grant(store):
-    store.put(
-        "oauth:tokens", {"access_token": "expired", "refresh_token": "synthetic", "expires_at": 0}
-    )
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(
             lambda r: httpx.Response(400, json={"error": "invalid_grant"})
         )
     )
-    oauth = OAuth(store, client, "id", "secret", "http://localhost:8000/oauth/callback")
-    with pytest.raises(AppError) as e:
-        await oauth.access_token()
-    assert e.value.code == "reauthorization_required"
+    identity = GoogleIdentityProvider(client, "id", "secret", "https://app.test/oauth/callback")
+    with pytest.raises(AppError) as error:
+        await identity.refresh("synthetic-refresh")
+    assert error.value.code == "reauthorization_required"
 
 
-def test_oauth_state_is_browser_bound_and_consumed(store):
-    oauth = OAuth(store, None, "id", "secret", "http://localhost:8000/oauth/callback")
-    url, state, binding = oauth.start(False)
-    assert "youtube.readonly" in url and "youtube.force-ssl" not in url
-    with pytest.raises(AppError):
-        oauth.consume_state(state, "wrong")
-    url, state, binding = oauth.start(True)
-    assert "youtube.force-ssl" in url
-    assert oauth.consume_state(state, binding)
-    with pytest.raises(AppError):
-        oauth.consume_state(state, binding)
+def test_oauth_state_is_bound_and_consumed(store):
+    security = SecurityStore(store)
+    state = security.create_login({"binding": "synthetic-browser", "nonce": "nonce"})
+    assert security.get_login(state)["binding"] == "synthetic-browser"
+    assert security.take_login(state)["nonce"] == "nonce"
+    assert security.take_login(state) is None
 
 
 async def test_profile_pagination_sample_and_missing_private_videos(store):
@@ -183,7 +186,10 @@ async def test_profile_pagination_sample_and_missing_private_videos(store):
         )
 
     p = GoogleProvider(
-        httpx.AsyncClient(transport=httpx.MockTransport(handler)), lambda: token(), store
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        lambda: token(),
+        store,
+        public_api_key="synthetic-key",
     )
     with Quota(store).reserve(45, 0):
         profile = await p.profile()
@@ -193,43 +199,17 @@ async def test_profile_pagination_sample_and_missing_private_videos(store):
     assert len(calls) <= 45
 
 
-async def test_oauth_exchange_pkce_refresh_and_disconnect(store):
-    calls = []
-
-    def handler(r):
-        calls.append(r)
-        if r.url.path == "/revoke":
-            return httpx.Response(200)
-        return httpx.Response(
-            200,
-            json={
-                "access_token": "new-access",
-                "refresh_token": "synthetic-refresh",
-                "expires_in": 3600,
-                "scope": "https://www.googleapis.com/auth/youtube.force-ssl",
-            },
-        )
-
-    oauth = OAuth(
-        store,
-        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
-        "id",
-        "secret",
-        "http://localhost:8000/oauth/callback",
-    )
-    _, state, binding = oauth.start(True)
-    await oauth.exchange("synthetic-code", state, binding)
-    assert "code_verifier" in calls[0].content.decode()
-    oauth.require_write()
-    assert await oauth.access_token() == "new-access"
-    payload = store.get("oauth:tokens")
-    payload["expires_at"] = 0
-    store.put("oauth:tokens", payload)
-    assert await oauth.access_token() == "new-access"
-    assert "refresh_token" in calls[1].content.decode()
-    store.put("cache:personal", {"synthetic": True})
-    await oauth.disconnect()
-    assert store.get("oauth:tokens") is None and store.get("cache:personal") is None
+async def test_google_credentials_and_sessions_disconnect_only_one_user(store):
+    security = SecurityStore(store)
+    alice, bob = security.upsert_user("google-a"), security.upsert_user("google-b")
+    security.save_google(alice, {"access_token": "account-a"})
+    security.save_google(bob, {"access_token": "account-b"})
+    a_session, _ = security.create_session(alice)
+    b_session, _ = security.create_session(bob)
+    security.revoke_user(alice)
+    assert security.google(alice) is None and security.session(a_session) is None
+    assert security.google(bob)["access_token"] == "account-b"
+    assert security.session(b_session)["user_id"] == bob
 
 
 @pytest.mark.parametrize("status,code", [(401, "reauthorization_required"), (429, "rate_limited")])
@@ -238,6 +218,7 @@ async def test_http_errors(store, status, code):
         httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(status, json={}))),
         lambda: token(),
         store,
+        public_api_key="synthetic-key",
     )
     with Quota(store).reserve(1, 0):
         with pytest.raises(AppError) as e:
@@ -253,7 +234,10 @@ async def test_provider_network_timeout_charged_no_retry(store):
         raise httpx.ReadTimeout("synthetic timeout")
 
     p = GoogleProvider(
-        httpx.AsyncClient(transport=httpx.MockTransport(handler)), lambda: token(), store
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        lambda: token(),
+        store,
+        public_api_key="synthetic-key",
     )
     q = Quota(store)
     with q.reserve(50, 0):
@@ -290,77 +274,55 @@ def test_atomic_transition_and_quota_concurrency(store):
 
 
 async def test_reauthorization_does_not_mix_account_tokens_cache_or_drafts(store):
-    store.put("oauth:tokens", {"access_token": "account-a", "refresh_token": "account-a-refresh"})
-    store.put("cache:profile-a", {"synthetic-account-a": True})
-    store.put("draft:account-a", {"status": "pending"})
-    response = {
-        "access_token": "account-b",
-        "expires_in": 3600,
-        "scope": "https://www.googleapis.com/auth/youtube.readonly",
-    }
-    oauth = OAuth(
-        store,
-        httpx.AsyncClient(
-            transport=httpx.MockTransport(lambda r: httpx.Response(200, json=response))
-        ),
-        "id",
-        "secret",
-        "http://localhost:8000/oauth/callback",
-    )
-    _, state, binding = oauth.start(False)
-    await oauth.exchange("b-code", state, binding)
-    assert store.get("oauth:tokens").get("refresh_token") is None
-    assert store.get("cache:profile-a") is None
-    assert store.get("draft:account-a") is None
+    security = SecurityStore(store)
+    alice, bob = security.upsert_user("google-a"), security.upsert_user("google-b")
+    security.save_google(alice, {"access_token": "a", "refresh_token": "a-refresh"})
+    security.save_google(bob, {"access_token": "b"})
+    a, b = ScopedStore(store, alice), ScopedStore(store, bob)
+    a.put("cache:profile", {"account": "a"})
+    a.put("draft:pending", {"status": "pending", "user_id": alice})
+    assert security.google(bob).get("refresh_token") is None
+    assert b.get("cache:profile") is None and b.get("draft:pending") is None
+    assert a.get("cache:profile")["account"] == "a"
 
 
-async def test_account_reauthorization_waits_for_workflow_and_invalidates_draft(store):
+async def test_parallel_workflows_keep_immutable_request_identity(store):
     import asyncio
 
     from tests.fakes import FixtureProvider
     from ytintel.domain import Constraints
     from ytintel.service import Intelligence
 
-    oauth = OAuth(
-        store,
-        httpx.AsyncClient(
-            transport=httpx.MockTransport(
-                lambda r: httpx.Response(
-                    200,
-                    json={
-                        "access_token": "account-b",
-                        "expires_in": 3600,
-                        "scope": "https://www.googleapis.com/auth/youtube.readonly",
-                    },
-                )
-            )
-        ),
-        "id",
-        "secret",
-        "http://localhost:8000/oauth/callback",
-    )
-    provider = FixtureProvider()
     entered, release = asyncio.Event(), asyncio.Event()
-    search = provider.search
+    provider = FixtureProvider()
+    original = provider.search
 
     async def blocked(*args):
         entered.set()
         await release.wait()
-        return await search(*args)
+        return await original(*args)
 
     provider.search = blocked
-    service = Intelligence(provider, store, Quota(store), account_lock=oauth.account_lock)
+    quota = Quota(store)
+    alice = Intelligence(
+        provider, ScopedStore(store, "alice"), quota, context=UserContext("alice", token, quota)
+    )
     proposal = asyncio.create_task(
-        service.propose(Constraints(topic="Python", total_seconds=1800, max_seconds=900))
+        alice.propose(Constraints(topic="Python", total_seconds=1800, max_seconds=900))
     )
     await entered.wait()
-    _, state, binding = oauth.start(False)
-    exchange = asyncio.create_task(oauth.exchange("b-code", state, binding))
-    await asyncio.sleep(0)
-    assert not exchange.done()
+    bob = Intelligence(
+        FixtureProvider(),
+        ScopedStore(store, "bob"),
+        quota,
+        context=UserContext("bob", token, quota),
+    )
+    bob_draft = await bob.propose(Constraints(topic="Python", total_seconds=1800, max_seconds=900))
     release.set()
-    draft, _ = await asyncio.gather(proposal, exchange)
-    assert store.get("draft:" + draft["id"]) is None
+    alice_draft = await proposal
+    assert alice_draft["user_id"] == "alice" and bob_draft["user_id"] == "bob"
+    with pytest.raises(AppError):
+        bob.draft(alice_draft["id"])
 
 
 async def test_channel_lookup_ranking_adapter_and_private_write_bodies(store):
@@ -389,7 +351,10 @@ async def test_channel_lookup_ranking_adapter_and_private_write_bodies(store):
     import json
 
     p = GoogleProvider(
-        httpx.AsyncClient(transport=httpx.MockTransport(handler)), lambda: token(), store
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        lambda: token(),
+        store,
+        public_api_key="synthetic-key",
     )
     with Quota(store).reserve(102, 1):
         assert (await p.channel("@pythonlab"))["title"] == "Python"

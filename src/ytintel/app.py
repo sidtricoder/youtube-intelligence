@@ -1,227 +1,180 @@
-"""FastAPI composition root and authentication boundary for a single local owner."""
+"""Composition root. MCP bearer authority and browser approval authority stay separate."""
 
+import html
 import logging
-import secrets
-import time
-from collections import defaultdict, deque
 from contextlib import asynccontextmanager
-from importlib.resources import files
 
 import httpx
-from fastapi import Depends, FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.security import HTTPBearer
-from pydantic import BaseModel, Field
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 
-from .auth import OAuth
+from .api import install_api_routes
 from .config import Settings
-from .domain import Constraints
+from .context import AnonymousContext, UserContext
+from .credentials import Credentials
 from .errors import AppError
+from .http_boundary import install_http_boundary
+from .http_gate import MCPGate
+from .identity import GoogleIdentityProvider, IdentityProvider
 from .mcp_server import build_mcp
-from .providers.base import Provider
+from .migrate import migrate
+from .oauth_routes import install_oauth_routes
 from .providers.google import GoogleProvider
-from .quota import Quota
+from .security import AuthServer, SecurityStore
 from .service import Intelligence
 from .store import Store
+from .tenancy import PublicStore, ScopedStore
+from .tenant_quota import TenantQuota
+from .web import install_browser_routes
 
 
-class Confirmation(BaseModel):
-    confirmation: str = Field(max_length=16)
-
-
-class RequestText(BaseModel):
-    request: str = Field(min_length=5, max_length=1000)
-
-
-def create_app(settings: Settings | None = None, *, provider: Provider | None = None):
+def create_app(
+    settings: Settings | None = None,
+    *,
+    provider=None,
+    identity_provider: IdentityProvider | None = None,
+    provider_factory=None,
+):
     s = settings or Settings()
-    store = (
+    issuer = s.public_base_url or s.local_base_url.rstrip("/")
+    raw = (
         Store.from_url(s.database_connection, s.encryption_key)
         if s.database_connection
         else Store(s.db_path, s.encryption_key)
     )
+    migrate(raw)
+    security = SecurityStore(raw)
+    auth = AuthServer(security, issuer)
     client = httpx.AsyncClient(timeout=20, follow_redirects=False)
-    oauth = OAuth(store, client, s.google_client_id, s.google_client_secret, s.redirect_uri)
-    provider = provider or GoogleProvider(
-        client, oauth.access_token, store, public_api_key=s.youtube_api_key
+    idp = identity_provider or GoogleIdentityProvider(
+        client, s.google_client_id, s.google_client_secret, s.redirect_uri
     )
-    service = Intelligence(
-        provider,
-        store,
-        Quota(store, s.units_per_day, s.searches_per_day),
-        oauth.require_write,
-        account_lock=oauth.account_lock,
-    )
-    mcp = build_mcp(service, s.public_base_url)
-    mcp_app = mcp.streamable_http_app()
+    credentials = Credentials(security, idp)
+    public_cache = PublicStore(raw)
+
+    async def context_factory(token, ip):
+        user_id = token.user_id if token else None
+        quota = TenantQuota(
+            raw,
+            user_id or "public",
+            units=s.units_per_day,
+            searches=s.searches_per_day,
+            user_units=s.user_units_per_day,
+            anonymous_units=s.anonymous_units_per_day,
+            max_searches=s.max_searches_per_request,
+            anonymous=user_id is None,
+        )
+        if user_id:
+            generation = security.current_grant_generation(user_id)
+            if generation is None:
+                raise AppError("reauthorization_required", "Sign in with Google again", 401)
+            return UserContext(user_id, lambda: credentials.access(user_id), quota, generation)
+        return AnonymousContext(ip, quota)
+
+    def service_factory(context):
+        generation = context.generation if isinstance(context, UserContext) else None
+        scoped = (
+            ScopedStore(raw, context.user_id, generation=context.generation)
+            if isinstance(context, UserContext)
+            else public_cache
+        )
+        selected = provider_factory(context, scoped, client) if provider_factory else provider
+        if selected is None:
+
+            async def no_private_access():
+                raise AppError("authentication_required", "Sign in to access account data", 401)
+
+            async def invalidate():
+                if isinstance(context, UserContext):
+                    credentials.invalidate(context.user_id, generation)
+
+            selected = GoogleProvider(
+                client,
+                context.credentials if isinstance(context, UserContext) else no_private_access,
+                scoped,
+                public_api_key=s.youtube_api_key,
+                context=context,
+                public_store=public_cache,
+                on_unauthorized=invalidate,
+            )
+        return Intelligence(
+            selected,
+            scoped,
+            context.quota,
+            (lambda: credentials.require_write(context.user_id))
+            if isinstance(context, UserContext)
+            else None,
+            context=context,
+            account_lock=credentials.workflow_lock(context.user_id)
+            if isinstance(context, UserContext)
+            else None,
+        )
+
+    mcp = build_mcp(service_factory, issuer, credentials.disconnect)
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     @asynccontextmanager
     async def lifespan(app):
-        store.purge()
         async with mcp.session_manager.run():
             yield
         await client.aclose()
-        store.close()
+        raw.close()
 
-    app = FastAPI(
-        title="YouTube Intelligence",
-        version="1.2.0",
-        lifespan=lifespan,
-        dependencies=[Depends(HTTPBearer(auto_error=False))],
-    )
-    app.state.service, app.state.mcp, app.state.oauth = service, mcp, oauth
-    windows = defaultdict(deque)
+    app = FastAPI(title="YouTube Intelligence", version="2.0.0", lifespan=lifespan)
+    app.state.store, app.state.security, app.state.auth = raw, security, auth
+    app.state.mcp, app.state.credentials = mcp, credentials
+    app.state.context_factory, app.state.service_factory = context_factory, service_factory
 
-    @app.middleware("http")
-    async def security(request: Request, call_next):
-        path = request.url.path
-        # /.well-known/* must answer 404, not 401: a 401 on OAuth discovery makes OAuth-capable
-        # clients believe this server requires an OAuth sign-in it does not implement.
-        public = path in {
-            "/",
-            "/health",
-            "/oauth/callback",
-            "/docs",
-            "/openapi.json",
-            "/redoc",
-        } or path.startswith("/.well-known/")
-        if not public:
-            header = request.headers.get("authorization", "")
-            supplied = header.removeprefix("Bearer ") if header.startswith("Bearer ") else ""
-            is_owner = secrets.compare_digest(supplied.encode(), s.owner_key.encode())
-            is_ai = secrets.compare_digest(supplied.encode(), s.api_key.encode())
-            # Dedicated URL key: opens /mcp only (never /api or /owner) and only when configured.
-            # The explicit emptiness checks matter: compare_digest("", "") is True.
-            url_key = request.query_params.get("key", "")
-            is_url_key = bool(
-                s.mcp_url_key
-                and url_key
-                and (path == "/mcp" or path.startswith("/mcp/"))
-                and secrets.compare_digest(url_key.encode(), s.mcp_url_key.encode())
-            )
-            if path.startswith("/mcp") and not (is_ai or is_url_key):
-                return JSONResponse({"error": {"code": "unauthorized"}}, 401)
-            if not (is_owner or is_ai or is_url_key):
-                return JSONResponse({"error": {"code": "unauthorized"}}, 401)
-            if path.startswith("/owner/") and not is_owner:
-                return JSONResponse({"error": {"code": "owner_required"}}, 403)
-            if request.method not in ("GET", "HEAD", "OPTIONS") and path.startswith("/owner/"):
-                # Authorization header is required and CORS is disabled. Cross-origin browser writes denied.
-                origin = request.headers.get("origin")
-                if origin and origin != str(request.base_url).rstrip("/"):
-                    return JSONResponse({"error": {"code": "origin_denied"}}, 403)
-            key = "owner" if is_owner else "ai"
-            now = time.monotonic()
-            queue = windows[key]
-            while queue and queue[0] < now - 60:
-                queue.popleft()
-            if len(queue) >= 60:
-                return JSONResponse(
-                    {"error": {"code": "rate_limited"}}, 429, headers={"Retry-After": "60"}
-                )
-            queue.append(now)
-        response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Cache-Control"] = "no-store"
-        response.headers["X-Frame-Options"] = "DENY"
-        if path == "/":
-            response.headers["Content-Security-Policy"] = (
-                "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
-            )
-        return response
+    install_http_boundary(app, auth, issuer)
 
-    @app.exception_handler(AppError)
-    async def application_error(request, exc):
-        return JSONResponse({"error": {"code": exc.code, "message": exc.message}}, exc.status)
-
-    @app.exception_handler(ValueError)
-    async def validation_error(request, exc):
-        return JSONResponse({"error": {"code": "invalid_input", "message": str(exc)}}, 422)
-
-    @app.get("/health", openapi_extra={"security": []})
+    @app.get("/health")
     async def health():
         return {"status": "ok", "provider": "youtube"}
 
     @app.get("/", response_class=HTMLResponse)
-    async def owner_page():
-        return files("ytintel").joinpath("owner.html").read_text()
-
-    @app.get("/api/quota")
-    async def quota():
-        return service.quota.status()
-
-    @app.get("/api/similar-videos")
-    async def similar_videos(video: str = Query(max_length=300)):
-        return await service.similar_videos(video)
-
-    @app.get("/api/similar-channels")
-    async def similar_channels(channel: str = Query(max_length=200)):
-        return await service.similar_channels(channel)
-
-    @app.get("/api/recommendations")
-    async def recommendations():
-        return await service.recommend()
-
-    @app.get("/api/analysis")
-    async def analysis(
-        start: str | None = None, end: str | None = None, previous_start: str | None = None
-    ):
-        return await service.analysis(start, end, previous_start)
-
-    @app.post("/api/drafts")
-    async def propose(c: Constraints):
-        return await service.propose(c)
-
-    @app.post("/api/drafts/from-request")
-    async def request_draft(body: RequestText):
-        from .domain import parse_request
-
-        return await service.propose(parse_request(body.request))
-
-    @app.get("/api/drafts/{ident}")
-    async def draft(ident: str):
-        return service.draft(ident)
-
-    @app.post("/owner/drafts/{ident}/approve")
-    async def approve(ident: str, body: Confirmation):
-        return await service.approve(ident, body.confirmation)
-
-    @app.post("/owner/drafts/{ident}/resume")
-    async def resume(ident: str, body: Confirmation):
-        return await service.resume(ident, body.confirmation)
-
-    @app.get("/owner/oauth/start")
-    async def oauth_start(write: bool = False):
-        url, state, binding = oauth.start(write)
-        response = JSONResponse({"url": url})
-        response.set_cookie(
-            "yt_oauth_binding",
-            binding,
-            max_age=600,
-            httponly=True,
-            samesite="lax",
-            secure=s.redirect_uri.startswith("https://"),
-            path="/oauth/callback",
+    async def home():
+        return (
+            "<h1>YouTube Intelligence</h1><p>Add <code>"
+            + html.escape(issuer + "/mcp/")
+            + "</code> to your AI client. Public discovery needs no sign-in. Account tools prompt you to sign in with Google. Open your draft approval link to create a playlist in your account.</p>"
         )
-        return response
 
-    @app.get("/oauth/callback", response_class=HTMLResponse)
-    async def callback(
-        request: Request, state: str = Query(max_length=100), code: str = Query(max_length=4096)
-    ):
-        await oauth.exchange(code, state, request.cookies.get("yt_oauth_binding", ""))
-        response = HTMLResponse(
-            "<p>Google connected. Close this tab and return to your original owner tab to continue.</p>"
-        )
-        response.delete_cookie("yt_oauth_binding", path="/oauth/callback")
-        return response
+    install_oauth_routes(app, auth, issuer)
 
-    @app.post("/owner/disconnect")
-    async def disconnect():
-        await oauth.disconnect()
-        return {"status": "disconnected", "local_data": "tokens, cache and drafts deleted"}
+    install_browser_routes(
+        app,
+        security=security,
+        auth=auth,
+        idp=idp,
+        credentials=credentials,
+        service_factory=service_factory,
+        raw=raw,
+        s=s,
+        issuer=issuer,
+    )
 
-    app.mount("/mcp", mcp_app)
+    rate_windows = install_api_routes(
+        app,
+        auth=auth,
+        issuer=issuer,
+        s=s,
+        credentials=credentials,
+        context_factory=context_factory,
+        service_factory=service_factory,
+    )
+
+    app.mount("/mcp", mcp.streamable_http_app())
+    app.add_middleware(
+        MCPGate,
+        auth=auth,
+        issuer=issuer,
+        context_factory=context_factory,
+        trusted_proxies=tuple(x.strip() for x in s.trusted_proxies.split(",") if x.strip()),
+        rate_limit=s.anonymous_rate_limit,
+        user_rate_limit=s.user_rate_limit,
+        credential_check=credentials.access,
+        windows=rate_windows,
+        max_searches=s.max_searches_per_request,
+    )
     return app

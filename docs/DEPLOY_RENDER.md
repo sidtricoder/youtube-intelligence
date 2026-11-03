@@ -1,112 +1,95 @@
-# Deploy this version on Render Free + Neon, then connect Claude
+# Deploy on Render + Neon and connect Claude
 
-This release supports PostgreSQL directly. No persistent Render disk is needed. The private ZIP includes the supplied Neon direct/pooled URLs and Google/app keys in `.env`; Git excludes that file. Application tables are created automatically in a dedicated PostgreSQL schema named `ytintel`. Existing unrelated tables are not modified. The pooled URL is preferred when both URLs are set.
+Deploy source from a private GitHub repository, use Neon for persistence, and enter secrets manually in Render Environment. The handoff contains only `.env.example`; never upload an existing `.env`, database or configured ZIP. No persistent Render disk is needed.
 
-## 1. Update GitHub
+## 1. Prepare source and Google
 
-Replace the previous project source with this version, including `Dockerfile`, `requirements.lock`, `pyproject.toml`, `src/`, `scripts/` and `render.yaml`. Commit/push source changes. Do not commit the configured `.env` or the ZIP containing it. If `.env` was previously tracked, `.gitignore` alone cannot untrack it; remove it from the index with `git rm --cached .env` before committing.
+Push the Dockerfile, lockfile, project metadata, source, scripts and deployment configuration. Confirm `.env` and local data are ignored and untracked before pushing. Keep existing local `.env` and data untouched. If secrets were previously committed, remove them from tracking and rotate exposed secrets; ignoring a file does not erase history.
 
-## 2. Configure the existing Render service
+Create/use a Google OAuth **Web application** client and enable YouTube Data API v3. Configure the external consent screen and test users. Default app consent is `openid` and `https://www.googleapis.com/auth/youtube.readonly`; the browser write-enable action alone requests `https://www.googleapis.com/auth/youtube`. Each end user supplies their own consent; the operator never connects an account for everyone.
 
-Keep the detected **Docker** runtime and **Free** instance. Set Root Directory to the directory containing `Dockerfile` and `pyproject.toml`. If those files are under `youtube-intelligence/` in GitHub, use that as Root Directory; if they are at repository root, leave Root Directory blank.
+Testing mode is limited to 100 test users and refresh tokens for this scope flow may expire after seven days. Production distribution requires applicable Google verification/review. Check actual project quota settings: the application defaults to 10,000 general units/day and a separate 100 `search.list` calls/day ceiling; these are local caps, not guaranteed upstream availability.
 
-In the service's **Environment** page, add/import these variables from the private `.env`:
+## 2. Configure Render
 
-| Variable | Value |
+Create a Docker web service from the private repository. Root Directory is the directory containing Dockerfile and pyproject.toml. The entry point honors `PORT`; use `/health` as the health check. Configure secrets without surrounding shell quotes:
+
+| Variable | Purpose |
 |---|---|
-| `DATABASE_URL` | Your supplied direct Neon PostgreSQL URL |
-| `DATABASE_URL_POOLED` | Your supplied pooled Neon PostgreSQL URL (runtime prefers this) |
-| `YT_ENCRYPTION_KEY` | Preserve the exact value in your configured `.env` |
-| `YT_API_KEY` | App/MCP credential from `.env` |
-| `YT_OWNER_KEY` | Separate owner credential from `.env` |
-| `YT_MCP_URL_KEY` | New, dedicated key for the Claude connector URL (see section 5). Generate with `python -c "import secrets;print(secrets.token_urlsafe(48))"`. Must differ from `YT_API_KEY` and `YT_OWNER_KEY` |
-| `YT_YOUTUBE_API_KEY` | Google API key from `.env` |
-| `YT_GOOGLE_CLIENT_ID` | Google OAuth client ID from `.env` |
-| `YT_GOOGLE_CLIENT_SECRET` | Google OAuth client secret from `.env` |
-| `YT_GOOGLE_PROJECT_ID` | `dark-smile` |
+| `DATABASE_URL_POOLED` | Neon pooled PostgreSQL URL, preferred for runtime |
+| `DATABASE_URL` | Optional direct URL for an explicitly documented administration workflow |
+| `YT_ENCRYPTION_KEY` | Fernet key, retained across deploys; generate once for a new installation |
+| `YT_YOUTUBE_API_KEY` | Restricted Google API key for public metadata calls |
+| `YT_GOOGLE_CLIENT_ID` | Google Web client ID |
+| `YT_GOOGLE_CLIENT_SECRET` | Google Web client secret |
+| `YT_GOOGLE_PROJECT_ID` | Your Google project identifier |
+| `YT_PUBLIC_BASE_URL` | Canonical HTTPS origin if overriding Render's external origin |
+| `YT_REDIRECT_URI` | Omit to derive, or exact canonical origin + `/oauth/callback` |
+| `YT_LOCAL_BASE_URL` | Local development origin only; defaults to `http://localhost:8000`, set for a custom port |
+| `YT_TRUSTED_PROXIES` | Comma-separated trusted ingress IPs/CIDRs; default empty, never `*` |
+| `YT_USER_UNITS_PER_DAY` | Per-user daily general units; default `1000` |
+| `YT_ANONYMOUS_UNITS_PER_DAY` | Anonymous global pool; omitted defaults dynamically to 30% of project units |
 
-Paste values without surrounding quotes. Preserve `sslmode=require&channel_binding=require` in Neon URLs. Do not regenerate encryption/app keys on every deploy; saved credentials are encrypted with that encryption key.
+Use `.env.example` for the complete current setting names and defaults, including tenant/anonymous budgets and rate limits. Preserve Neon TLS parameters, including `sslmode=require` and supplied channel binding. A configured database outage fails closed rather than switching to an ephemeral local database. Keep the encryption key out of Git; changing it without migration makes stored records unreadable.
 
-**Remove `YT_REDIRECT_URI` if it contains the old localhost callback.** Also remove an old `YT_PUBLIC_BASE_URL` if it names a different deployment. Render supplies `RENDER_EXTERNAL_URL`; the application derives its exact HTTPS callback and MCP hostname from that origin. A mismatched explicit callback now stops startup with a clear configuration error instead of silently using a fallback.
+Render supplies `RENDER_EXTERNAL_URL`. Remove stale localhost/different-host callback overrides from Render only. Choose one canonical HTTPS origin and use it for browser sessions, MCP discovery and callback registration. Configure trusted proxy addresses for the deployed ingress explicitly; trusting arbitrary forwarded IPs defeats IP quotas. Do not enable wildcard CORS or set a wildcard proxy trust as a shortcut.
 
-For your own custom domain, explicitly set `YT_PUBLIC_BASE_URL=https://your-domain.example` and set `YT_REDIRECT_URI` to the same origin plus `/oauth/callback`, or omit `YT_REDIRECT_URI` to derive it. Use the chosen domain consistently for the owner UI and OAuth.
+Do not configure legacy `YT_API_KEY`, `YT_OWNER_KEY` or `YT_MCP_URL_KEY` as a client authorization mechanism. They do not replace per-user OAuth. Redeploy after setting secrets. Run the idempotent migration once with the configured production environment:
 
-No manual Docker start command is needed. The image starts `python -m ytintel`, binds `0.0.0.0`, honors Render's `PORT`, and correctly trusts Render's proxy headers. Health Check Path: `/health`. Keep one instance/process for this single-owner application.
-
-Select **Save, rebuild and deploy** (or deploy the latest commit). `render.yaml` provides equivalent settings for a new Blueprint deployment; secret values are prompted, never included in YAML.
-
-## 3. Register the hosted Google callback
-
-Copy your actual HTTPS Render service URL from the dashboard. Example only:
-
-```
-https://your-service.onrender.com
+```bash
+python -m ytintel.migrate --database-url-env DATABASE_URL_POOLED
 ```
 
-In the Google OAuth Web client, add:
+The CLI reads that URL and `YT_ENCRYPTION_KEY` from environment variables without printing their values. For an explicit local file, use `python -m ytintel.migrate --sqlite /path/to/local.db` with the encryption key exported. A bare migration command is rejected because the target must be explicit. Startup performs the same idempotent version-1 table initialization. Existing single-owner records are ignored, never imported into a user account; users connect again and build fresh drafts. Before migrating an existing installation, back up encrypted data and retain its encryption key. Do not point tests at production data.
 
-```
+## 3. Register the exact hosted callback
+
+For a service whose canonical origin is `https://your-service.onrender.com`, register this exact Google redirect URI:
+
+```text
 https://your-service.onrender.com/oauth/callback
 ```
 
-Keep the existing localhost callback if you still want local use. These are separately registered exact URIs, not runtime fallbacks.
+The callback is at the root, never under `/mcp`. An independently registered localhost URI can remain for local development; it is not a runtime fallback. Startup/callback mismatches must be resolved with the canonical origin rather than bypassing validation.
 
-## 4. Connect Google once
+## 4. Add Claude connector
 
-Open the hosted owner page, enter `YT_OWNER_KEY`, then click **Enable playlist writes** if you want all features (or **Connect Google (read)** for read-only access). Complete consent in the new tab and return to the original owner tab. Google account consent is separate from the bearer credential Claude uses to reach your MCP server.
+In the custom remote connector dialog choose:
 
-Tokens, drafts, cached data and quota counters are stored encrypted in Neon and survive a Render restart/redeploy. Sign-in/scope escalation deliberately invalidates older drafts; build a fresh preview after authorization. Google can still expire/revoke a grant, including Testing-mode token expiry; reauthorize when requested.
+| Field | Value |
+|---|---|
+| Server URL | `https://your-service.onrender.com/mcp/` |
+| Transport | Streamable HTTP |
+| Authentication | Sign In When Needed |
+| Client registration | Register Automatically |
 
-## 5. Connect Claude
+Use the trailing slash. Do not append `?key=`, supply a static bearer token/header or paste Google secrets. The server advertises SDK dynamic client registration with HTTPS/loopback redirect validation. CIMD is unsupported and is not advertised. The root protected-resource metadata and OAuth challenge let the client discover sign-in when protected work is requested. MCP scope `youtube:read` is distinct from Google's consent scopes.
 
-In Claude: **Customize → Connectors → Add → Custom → Web**.
+## 5. Verify as an end user
 
-- Name: `YouTube Intelligence`
-- Leave the OAuth Client ID / Secret fields empty. This server has no MCP OAuth sign-in.
+First ask anonymously:
 
-**Method A (recommended; works when the dialog has no Request headers section).** Set `YT_MCP_URL_KEY` in Render, redeploy, then use this as the Server URL:
-
-```
-https://your-service.onrender.com/mcp/?key=YOUR_YT_MCP_URL_KEY
-```
-
-The key is in the URL, so treat the whole URL as a password: do not paste it into screenshots, chats or commits, and rotate it (change `YT_MCP_URL_KEY` in Render, redeploy, remove and re-add the connector) if it leaks. This key opens `/mcp/` only. It cannot open `/api/*` or the owner page, and it cannot approve or write playlists. Nothing else about the connector requires logging in: Google sign-in happens once, on the owner page.
-
-**Method B (only if your Claude dialog shows Request headers).** Server URL `https://your-service.onrender.com/mcp/`, header name `Authorization`, header value `Bearer ` followed by your **YT_API_KEY**.
-
-Do not give Claude your owner key, Google client secret, database URL or encryption key. The server's Google sign-in is performed on the hosted owner page. It is not an MCP OAuth authorization server for ChatGPT.
-
-Enable the connector in a conversation and ask:
-
-> Use YouTube Intelligence to find similar videos to https://www.youtube.com/watch?v=rfscVS0vtbw.
+> Find videos similar to https://www.youtube.com/watch?v=rfscVS0vtbw.
 
 Then:
 
-> Build a one-hour Python learning playlist, with no video over 15 minutes. Show me the preview and where to approve it.
+> Preview a one-hour Python playlist, with no video over 15 minutes, language en.
 
-Approve the exact draft in the hosted owner page. AI tools cannot approve writes. The server supplies its owner page URL through MCP metadata/resources. After approval Claude can read `playlist_status`.
+Public previews are stateless and cannot be approved as user drafts. Next ask for personal recommendations and complete Google sign-in as your own account when prompted. For a real playlist, create an authenticated draft, open its approval page in that same user's browser session, enable writes through the explicit POST action on that draft’s approval page, review a fresh exact draft and approve it. The AI cannot approve on your behalf. Ask for its status afterward.
 
-Render Free sleeps when idle and may take about a minute to wake. If Claude's initial connection times out after a long idle period, open the hosted owner page, let the service finish waking, then reconnect Claude. Persistent Neon storage prevents that sleep from erasing authorization. Free-tier quotas still apply; this setup is for personal/student use, not an always-on production SLA.
+Repeat with a second account in an independent browser session to confirm private results, draft/status access and disconnect are isolated. See TESTING.md for the complete acceptance sequence. Successful public discovery alone does not verify refresh tokens, production Google approval or live writes.
 
-## Errors
+Render free instances may sleep and cold-start, and Neon free plans have resource/availability limits. Wake the root page before reconnecting after a long idle period. Durable database storage survives an app restart but does not guarantee uptime. Check current plan terms and quotas in the provider dashboards; this guide does not promise permanent free pricing or a production SLA.
 
-| Error | Fix |
+| Symptom | Action |
 |---|---|
-| Missing required local app key | Import the existing .env values into Render Environment |
-| Callback mismatch at startup | Remove the localhost `YT_REDIRECT_URI` on Render or set the exact hosted callback |
-| Google `redirect_uri_mismatch` | Register the exact hosted callback in Google Cloud, not just localhost |
-| `database_unavailable` | Check Neon URL/password/TLS and service availability; there is no silent SQLite fallback |
-| MCP `421 Invalid Host` | Confirm the service's actual HTTPS origin is configured; v1.2 includes the public hostname in its allowlist |
-| `origin_denied` on owner actions | Use the configured HTTPS domain; v1.2 recognizes Render proxy headers |
-| Owner `401` | Enter `YT_OWNER_KEY` in the owner page, without quotes; Google consent does not replace it |
-| Claude unauthorized | Method A: the URL must end `/mcp/?key=<YT_MCP_URL_KEY>` and the variable must be set in Render (redeploy after adding). Method B: use `YT_API_KEY` in the Authorization header, not the Google API key |
-| Startup error mentioning `YT_MCP_URL_KEY` | It needs at least 32 URL-safe characters (letters, digits, `. _ ~ -`) and must differ from the API and owner keys |
+| Callback mismatch | Use the exact HTTPS root callback in both app configuration and Google Web client |
+| Public call with token returns 401 | Remove/re-authorize the invalid token; supplied bad credentials are never downgraded to anonymous |
+| Protected call returns 401 | Complete the discovered sign-in flow; inspect the Bearer resource metadata challenge |
+| Write scope required | Enable writes in your own browser, then review a fresh owned draft |
+| Draft unavailable | Use the account that created it; IDs never grant cross-user access |
+| Quota exhausted | Wait for reset or lower usage; sign-in does not bypass project/search ceilings |
+| Database unavailable | Check Neon connectivity/TLS and secrets; no silent SQLite fallback is expected |
+| Connector timeout after idle | Wake the hosted root page, then reconnect; inspect deployment health if it persists |
 
-## Official references
-
-- https://render.com/docs/docker
-- https://render.com/docs/environment-variables
-- https://render.com/docs/configure-environment-variables
-- https://render.com/docs/free
-- https://neon.com/docs/get-started-with-neon/connect-neon
-- https://support.claude.com/en/articles/11176164-use-connectors-to-extend-claude-s-capabilities
+Run one application process/worker per deployment. The launcher explicitly uses one worker; in-process request rate windows require one instance (daily quota and token rotation are database-atomic). Add a distributed rate limiter before horizontal scaling.

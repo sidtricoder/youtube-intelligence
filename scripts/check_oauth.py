@@ -1,77 +1,40 @@
-"""Verify fixed Google OAuth redirect readiness without completing user sign-in."""
+"""Check local Google authorization request configuration without contacting Google."""
 
 import argparse
 import asyncio
 import json
-import tempfile
+import secrets
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
-from cryptography.fernet import Fernet
 
-from ytintel.auth import OAuth
 from ytintel.config import Settings
-from ytintel.store import Store
+from ytintel.identity import GoogleIdentityProvider
 
 
 async def check(output: Path) -> dict:
     settings = Settings()
-    with tempfile.TemporaryDirectory() as directory:
-        store = Store(str(Path(directory) / "oauth.db"), Fernet.generate_key().decode())
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-            oauth = OAuth(
-                store,
-                client,
-                settings.google_client_id,
-                settings.google_client_secret,
-                settings.redirect_uri,
-            )
-            url, _, _ = oauth.start(False)
-            try:
-                response = await client.get(url)
-                body = response.text.lower()
-                target = urlparse(str(response.url))
-                codes = [
-                    "redirect_uri_mismatch",
-                    "invalid_client",
-                    "deleted_client",
-                    "access_denied",
-                    "org_internal",
-                ]
-                errors = [code for code in codes if code in body or code in str(response.url)]
-                if errors or "/error" in target.path:
-                    result = {
-                        "status": "FAIL",
-                        "http_status": response.status_code,
-                        "google_error_codes": errors,
-                        "final_path": target.path,
-                    }
-                elif (
-                    response.status_code == 200
-                    and target.hostname == "accounts.google.com"
-                    and ("signin" in target.path.lower() or "sign in" in body)
-                ):
-                    result = {
-                        "status": "PASS",
-                        "http_status": 200,
-                        "result": "Google accepted authorization request and displayed sign-in page; no redirect error",
-                        "callback": settings.redirect_uri,
-                        "user_consent_completed": False,
-                    }
-                else:
-                    result = {
-                        "status": "INCONCLUSIVE",
-                        "http_status": response.status_code,
-                        "final_host": target.hostname,
-                        "final_path": target.path,
-                    }
-            except httpx.RequestError as exc:
-                result = {
-                    "status": "FAIL",
-                    "error_type": type(exc).__name__,
-                    "reason": "Authorization endpoint could not be reached from test environment",
-                }
+    async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+        provider = GoogleIdentityProvider(
+            client, settings.google_client_id, settings.google_client_secret, settings.redirect_uri
+        )
+        url = provider.authorization_url(
+            secrets.token_urlsafe(32), secrets.token_urlsafe(32), secrets.token_urlsafe(48)
+        )
+        query = parse_qs(urlsplit(url).query)
+        valid = bool(settings.google_client_id and settings.google_client_secret)
+        result = {
+            "status": "PASS" if valid else "FAIL",
+            "result": "Local authorization request configured"
+            if valid
+            else "Google OAuth client configuration required",
+            "callback": settings.redirect_uri,
+            "pkce": query["code_challenge_method"][0],
+            "user_consent_completed": False,
+            "google_callback_registration_verified": False,
+            "network_requests": 0,
+        }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
@@ -81,8 +44,7 @@ async def check(output: Path) -> dict:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("docs/OAUTH_READINESS.json"))
-    args = parser.parse_args()
-    result = asyncio.run(check(args.output))
+    result = asyncio.run(check(parser.parse_args().output))
     raise SystemExit(0 if result["status"] == "PASS" else 1)
 
 

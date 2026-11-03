@@ -1,4 +1,3 @@
-import re
 from urllib.parse import urlparse
 
 from pydantic import AliasChoices, Field, SecretStr, model_validator
@@ -23,11 +22,6 @@ class Settings(BaseSettings):
     render_external_url: str = Field(default="", validation_alias="RENDER_EXTERNAL_URL")
     public_base_url: str = ""
     encryption_key: str = Field(repr=False)
-    api_key: str = Field(repr=False)
-    owner_key: str = Field(repr=False)
-    # Optional dedicated credential that lets header-less MCP clients (such as Claude custom
-    # connectors) call /mcp as https://host/mcp/?key=<value>. Empty disables the feature.
-    mcp_url_key: str = Field(default="", repr=False)
     youtube_api_key: str = Field(default="", repr=False)
     google_project_id: str = ""
     google_client_id: str = ""
@@ -35,6 +29,13 @@ class Settings(BaseSettings):
     redirect_uri: str | None = None
     units_per_day: int = 10000
     searches_per_day: int = 100
+    user_units_per_day: int = 1000
+    anonymous_units_per_day: int | None = None
+    anonymous_rate_limit: int = 30
+    user_rate_limit: int = 120
+    max_searches_per_request: int = 3
+    trusted_proxies: str = ""
+    local_base_url: str = "http://localhost:8000"
 
     @property
     def database_connection(self) -> str | None:
@@ -43,17 +44,6 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_configuration(self):
-        if min(len(self.api_key), len(self.owner_key)) < 32 or self.api_key == self.owner_key:
-            raise ValueError("Use distinct random API and owner keys of at least 32 characters")
-        if self.mcp_url_key:
-            if len(self.mcp_url_key) < 32 or not re.fullmatch(
-                r"[A-Za-z0-9._~-]+", self.mcp_url_key
-            ):
-                raise ValueError(
-                    "YT_MCP_URL_KEY must be at least 32 URL-safe characters (letters, digits, . _ ~ -)"
-                )
-            if self.mcp_url_key in (self.api_key, self.owner_key):
-                raise ValueError("YT_MCP_URL_KEY must differ from the API and owner keys")
         if self.units_per_day < 0 or self.searches_per_day < 0:
             raise ValueError("Quota limits cannot be negative")
         origin = (self.public_base_url or self.render_external_url).rstrip("/")
@@ -79,9 +69,45 @@ class Settings(BaseSettings):
             self.public_base_url = origin
             self.redirect_uri = callback
         else:
-            self.redirect_uri = self.redirect_uri or "http://localhost:8000/oauth/callback"
+            self.redirect_uri = (
+                self.redirect_uri or self.local_base_url.rstrip("/") + "/oauth/callback"
+            )
         if self.render_external_url and not self.database_connection:
             raise ValueError(
                 "Render requires DATABASE_URL or DATABASE_URL_POOLED; local database storage is not persistent"
             )
+        if self.anonymous_units_per_day is None:
+            self.anonymous_units_per_day = int(self.units_per_day * 0.3)
+        if (
+            min(
+                self.user_units_per_day,
+                self.anonymous_units_per_day,
+                self.max_searches_per_request,
+                self.anonymous_rate_limit,
+                self.user_rate_limit,
+            )
+            < 0
+        ):
+            raise ValueError("Budgets and rate limits cannot be negative")
+        from ipaddress import ip_network
+
+        for item in self.trusted_proxies.split(","):
+            if item.strip():
+                ip_network(item.strip(), strict=False)
+        if not self.public_base_url:
+            parsed_local = urlparse(self.local_base_url)
+            if (
+                parsed_local.scheme != "http"
+                or parsed_local.hostname not in {"localhost", "127.0.0.1", "::1"}
+                or parsed_local.path
+                or parsed_local.query
+                or parsed_local.fragment
+            ):
+                raise ValueError("Local base URL must be a loopback HTTP origin")
+            expected = self.local_base_url.rstrip("/") + "/oauth/callback"
+            if self.redirect_uri and self.redirect_uri != expected:
+                raise ValueError(
+                    "Local redirect URI must match YT_LOCAL_BASE_URL + /oauth/callback"
+                )
+            self.redirect_uri = expected
         return self

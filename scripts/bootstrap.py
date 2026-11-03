@@ -1,7 +1,6 @@
 """Create local credentials once. Never print their values or overwrite existing configuration."""
 
 import os
-import secrets
 from pathlib import Path
 
 from cryptography.fernet import Fernet
@@ -15,8 +14,6 @@ def bootstrap(path: Path = Path(".env")) -> bool:
     values = {
         "YT_DB_PATH": "data/ytintel.db",
         "YT_ENCRYPTION_KEY": Fernet.generate_key().decode(),
-        "YT_API_KEY": secrets.token_urlsafe(48),
-        "YT_OWNER_KEY": secrets.token_urlsafe(48),
         "YT_YOUTUBE_API_KEY": "",
         "YT_GOOGLE_PROJECT_ID": "",
         "YT_GOOGLE_CLIENT_ID": "",
@@ -32,7 +29,7 @@ def bootstrap(path: Path = Path(".env")) -> bool:
 
 if __name__ == "__main__":
     print(
-        "Created .env. Open it locally to copy your owner key."
+        "Created .env. Add your Google configuration locally."
         if bootstrap()
         else ".env already exists; left unchanged."
     )

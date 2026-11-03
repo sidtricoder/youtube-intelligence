@@ -2,17 +2,29 @@ import pytest
 from cryptography.fernet import Fernet
 
 from tests.fakes import FixtureProvider
+from ytintel.context import UserContext
 from ytintel.domain import Constraints
 from ytintel.errors import AppError
 from ytintel.quota import Quota
 from ytintel.service import Intelligence
 from ytintel.store import Store
+from ytintel.tenancy import ScopedStore
 
 
 @pytest.fixture
 def service(tmp_path):
     store = Store(str(tmp_path / "test.db"), Fernet.generate_key().decode())
-    return Intelligence(FixtureProvider(), store, Quota(store))
+
+    async def credentials():
+        return "fixture-token"
+
+    quota = Quota(store)
+    return Intelligence(
+        FixtureProvider(),
+        ScopedStore(store, "fixture"),
+        quota,
+        context=UserContext("fixture", credentials, quota),
+    )
 
 
 async def test_all_read_workflows(service):
@@ -77,7 +89,7 @@ async def test_ambiguous_write_stops_retry(service):
 
 
 async def test_quota_rejects_before_provider_call(service):
-    service.quota = Quota(service.store, units=0, searches=0)
+    service.quota = Quota(service.store.raw, units=0, searches=0)
 
     async def forbidden(*args):
         pytest.fail("provider must not be called")
@@ -85,3 +97,38 @@ async def test_quota_rejects_before_provider_call(service):
     service.provider.search = forbidden
     with pytest.raises(AppError):
         await service.propose(Constraints(topic="Python", total_seconds=600, max_seconds=600))
+
+
+async def test_personalized_draft_excludes_already_liked_and_saved(service):
+    constraints = Constraints(topic="Python", total_seconds=7200, max_seconds=1200)
+    profile = await service.provider.profile()
+    known = {event["video"]["id"] for event in profile["events"]}
+    draft = await service.propose(constraints)
+    assert draft["videos"]
+    assert not known.intersection(video["id"] for video in draft["videos"])
+    unfiltered = await service.propose(constraints, exclude_saved=False)
+    assert known.intersection(video["id"] for video in unfiltered["videos"])
+
+
+async def test_personalized_draft_reserves_entire_profile_and_search_before_calls(service):
+    service.quota = Quota(service.store.raw, units=46, searches=100)
+
+    async def forbidden(*args):
+        pytest.fail("provider called before entire workflow reservation")
+
+    service.provider.profile = forbidden
+    service.provider.search = forbidden
+    service.provider.videos = forbidden
+    with pytest.raises(AppError) as error:
+        await service.propose(Constraints(topic="Python", total_seconds=1800, max_seconds=1200))
+    assert error.value.code == "quota_exceeded"
+
+
+async def test_unfiltered_draft_and_stateless_preview_never_read_profile(service):
+    async def forbidden(*args):
+        pytest.fail("public preview or unfiltered draft read private profile")
+
+    service.provider.profile = forbidden
+    constraints = Constraints(topic="Python", total_seconds=1800, max_seconds=1200)
+    assert (await service.propose(constraints, exclude_saved=False))["videos"]
+    assert (await service.preview(constraints))["videos"]

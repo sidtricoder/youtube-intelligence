@@ -12,8 +12,6 @@ def settings(**overrides):
     return Settings(
         _env_file=None,
         encryption_key=Fernet.generate_key().decode(),
-        api_key="a" * 32,
-        owner_key="o" * 32,
         **overrides,
     )
 
@@ -124,7 +122,6 @@ async def test_cloud_mcp_accepts_configured_hostname_and_rejects_other_hosts(tmp
                 },
             }
             headers = {
-                "Authorization": "Bearer " + "a" * 32,
                 "Accept": "application/json, text/event-stream",
                 "Origin": "https://youtube-example.onrender.com",
             }
@@ -139,20 +136,16 @@ def test_empty_pooled_url_does_not_hide_configured_direct_url():
     assert s.database_connection == "postgresql://user:synthetic@db.test/db"
 
 
-def test_render_proxy_headers_reconstruct_https_origin():
+def test_render_does_not_implicitly_trust_forwarded_headers():
     from ytintel.server import server_options
 
-    assert (
-        server_options({"RENDER_EXTERNAL_URL": "https://example.onrender.com"})[
-            "forwarded_allow_ips"
-        ]
-        == "*"
-    )
+    options = server_options({"RENDER_EXTERNAL_URL": "https://example.onrender.com"})
+    assert options["forwarded_allow_ips"] == ""
+    assert options["proxy_headers"] is False
 
 
-async def test_https_owner_write_works_behind_trusted_render_proxy(tmp_path):
+async def test_https_user_action_uses_session_csrf_and_configured_origin_behind_proxy(tmp_path):
     import httpx
-    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
     from tests.fakes import FixtureProvider
     from ytintel.app import create_app
@@ -164,30 +157,33 @@ async def test_https_owner_write_works_behind_trusted_render_proxy(tmp_path):
         provider=FixtureProvider(),
     )
     async with app.router.lifespan_context(app):
-        transport = httpx.ASGITransport(app=ProxyHeadersMiddleware(app, trusted_hosts="*"))
+        user = app.state.security.upsert_user("proxy-google-subject")
+        cookie, csrf = app.state.security.create_session(user)
+        transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
             transport=transport, base_url="http://127.0.0.1:8000"
         ) as client:
             headers = {
                 "Host": "cloud-example.onrender.com",
-                "X-Forwarded-Proto": "https",
+                "X-Forwarded-Proto": "http",
                 "Origin": "https://cloud-example.onrender.com",
-                "Authorization": "Bearer " + "o" * 32,
+                "Cookie": "yt_session=" + cookie,
             }
-            # Owner-only endpoint checks Origin before executing its normal semantics.
-            result = await client.post(
-                "/owner/drafts/missing/approve", headers=headers, json={"confirmation": "CREATE"}
-            )
-            assert (
-                result.status_code == 403
-                and result.json()["error"]["code"] == "write_scope_required"
-            )
+            form = {"confirmation": "CREATE", "csrf": csrf}
+            result = await client.post("/approve/missing", headers=headers, data=form)
+            assert result.status_code == 404
             blocked = await client.post(
-                "/owner/drafts/missing/approve",
+                "/approve/missing",
                 headers={**headers, "Origin": "https://evil.test"},
-                json={"confirmation": "CREATE"},
+                data=form,
             )
-            assert blocked.status_code == 403 and blocked.json()["error"]["code"] == "origin_denied"
+            assert blocked.status_code == 403
+            wrong_csrf = await client.post(
+                "/approve/missing",
+                headers=headers,
+                data={**form, "csrf": "wrong"},
+            )
+            assert wrong_csrf.status_code == 403
 
 
 def test_browser_fixture_ignores_exported_production_database(monkeypatch, tmp_path):
@@ -196,8 +192,6 @@ def test_browser_fixture_ignores_exported_production_database(monkeypatch, tmp_p
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:synthetic@production.invalid/db")
     monkeypatch.setenv("YT_ENCRYPTION_KEY", Fernet.generate_key().decode())
-    monkeypatch.setenv("YT_API_KEY", "a" * 32)
-    monkeypatch.setenv("YT_OWNER_KEY", "o" * 32)
     monkeypatch.setenv("YT_DB_PATH", str(tmp_path / "browser.db"))
     monkeypatch.setattr(
         Store,
@@ -207,5 +201,5 @@ def test_browser_fixture_ignores_exported_production_database(monkeypatch, tmp_p
         ),
     )
     app = create_browser_app()
-    assert app.state.service.store.backend == "sqlite"
-    app.state.service.store.close()
+    assert app.state.store.backend == "sqlite"
+    app.state.store.close()

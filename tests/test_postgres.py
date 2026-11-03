@@ -121,3 +121,114 @@ def test_postgres_upsert_expiry_and_literal_prefix(pg):
     store.delete_prefix("literal%:")
     assert store.get("literal%:value") is None
     assert store.get("literalABC:value") == {"v": 2}
+
+
+def test_postgres_security_sessions_and_google_grants_are_isolated(pg):
+    from ytintel.migrate import migrate
+    from ytintel.security import SecurityStore
+    from ytintel.tenancy import ScopedStore
+
+    raw, url, schema, key = pg
+    assert migrate(raw) == 1
+    security = SecurityStore(raw)
+    alice, bob = (security.upsert_user(sub) for sub in ("google-sub-alice", "google-sub-bob"))
+    assert alice != bob
+    security.save_google(alice, {"refresh_token": "synthetic-alice"})
+    security.save_google(bob, {"refresh_token": "synthetic-bob"})
+    alice_cookie, alice_csrf = security.create_session(alice)
+    bob_cookie, _ = security.create_session(bob)
+    ScopedStore(raw, alice).put("draft:same-id", {"owner": "alice"})
+    ScopedStore(raw, bob).put("draft:same-id", {"owner": "bob"})
+    raw.close()
+    reopened = Store.from_url(url.get_secret_value(), key, schema=schema)
+    try:
+        durable = SecurityStore(reopened)
+        assert durable.upsert_user("google-sub-alice") == alice
+        assert durable.session(alice_cookie) == {
+            "user_id": alice,
+            "csrf": alice_csrf,
+            "generation": durable.generation(alice),
+        }
+        assert ScopedStore(reopened, alice).get("draft:same-id") == {"owner": "alice"}
+        assert ScopedStore(reopened, bob).get("draft:same-id") == {"owner": "bob"}
+        durable.revoke_user(alice)
+        assert durable.google(alice) is None
+        assert durable.session(alice_cookie) is None
+        assert durable.google(bob) == {"refresh_token": "synthetic-bob"}
+        assert durable.session(bob_cookie)["user_id"] == bob
+    finally:
+        reopened.close()
+
+
+async def test_postgres_oauth_rotation_replay_and_two_user_isolation(pg):
+    from urllib.parse import parse_qs, urlsplit
+
+    from mcp.server.auth.provider import AuthorizationParams, TokenError
+    from mcp.shared.auth import OAuthClientInformationFull
+    from pydantic import AnyUrl
+
+    from ytintel.security import AuthServer, SecurityStore
+
+    raw, *_ = pg
+    security = SecurityStore(raw)
+    server = AuthServer(security, "https://synthetic.example")
+    client = OAuthClientInformationFull(
+        client_id="synthetic-client",
+        redirect_uris=[AnyUrl("https://synthetic-client.example/callback")],
+        token_endpoint_auth_method="none",
+    )
+    await server.register_client(client)
+
+    async def issue(subject):
+        user = security.upsert_user(subject)
+        params = AuthorizationParams(
+            state="state",
+            scopes=["youtube.read"],
+            code_challenge="a" * 43,
+            redirect_uri=client.redirect_uris[0],
+            redirect_uri_provided_explicitly=True,
+            resource=server.resource,
+        )
+        transaction = parse_qs(urlsplit(await server.authorize(client, params)).query)[
+            "transaction"
+        ][0]
+        callback = server.complete_login(transaction, user)
+        code = parse_qs(urlsplit(callback).query)["code"][0]
+        record = await server.load_authorization_code(client, code)
+        token = await server.exchange_authorization_code(client, record)
+        assert await server.load_authorization_code(client, code) is None
+        return user, token
+
+    alice, alice_token = await issue("alice")
+    bob, bob_token = await issue("bob")
+    assert (await server.load_access_token(alice_token.access_token)).user_id == alice
+    assert (await server.load_access_token(bob_token.access_token)).user_id == bob
+    refresh = await server.load_refresh_token(client, alice_token.refresh_token)
+    rotated = await server.exchange_refresh_token(client, refresh, refresh.scopes)
+    with pytest.raises(TokenError):
+        await server.exchange_refresh_token(client, refresh, refresh.scopes)
+    assert await server.load_access_token(rotated.access_token) is None
+    assert await server.load_access_token(bob_token.access_token)
+    security.revoke_user(bob)
+    assert await server.load_access_token(bob_token.access_token) is None
+
+
+def test_postgres_subject_upsert_is_atomic_across_repository_instances(pg):
+    from ytintel.security import SecurityStore
+
+    raw, url, schema, key = pg
+    first = SecurityStore(raw)
+    second_raw = Store.from_url(url.get_secret_value(), key, schema=schema)
+    second = SecurityStore(second_raw)
+    barrier = threading.Barrier(2)
+
+    def upsert(security):
+        barrier.wait()
+        return security.upsert_user("same-verified-google-subject")
+
+    try:
+        with ThreadPoolExecutor(2) as pool:
+            users = list(pool.map(upsert, [first, second]))
+        assert users[0] == users[1]
+    finally:
+        second_raw.close()
