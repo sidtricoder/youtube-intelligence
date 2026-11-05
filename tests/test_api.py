@@ -90,10 +90,10 @@ def test_own_browser_confirmation_and_validation(client, app):
     )
 
 
-def test_rate_limit(client, app):
+def test_no_application_rate_limit(client, app):
     _, headers, _, _ = account(app)
     responses = [client.get("/api/quota", headers=headers).status_code for _ in range(121)]
-    assert responses[0] == 200 and responses[-1] == 429
+    assert all(status == 200 for status in responses)
 
 
 def test_unknown_tool_path_cannot_write(client, app):

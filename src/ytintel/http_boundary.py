@@ -73,7 +73,13 @@ def install_http_boundary(app, auth, issuer):
             response.headers["Vary"] = "Accept"
             return response
         return JSONResponse(
-            {"error": {"code": exc.code, "message": exc.message}},
+            {
+                "error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    **({"details": exc.details} if exc.details else {}),
+                }
+            },
             exc.status,
             headers=headers,
         )

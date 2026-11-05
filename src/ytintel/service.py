@@ -310,6 +310,7 @@ class Intelligence:
                 raise AppError(
                     "invalid_draft_state", "Draft was already claimed, completed or expired", 409
                 )
+            d.pop("error", None)
             try:
                 if not d["playlist_id"]:
                     # Persist uncertain *before* the request. Crash leaves a state that cannot auto-resume.
@@ -339,7 +340,11 @@ class Intelligence:
             except AppError as e:
                 d["status"] = "uncertain" if e.code == "upstream_unavailable" else "partial"
                 event("playlist.write_failed", warning=True, error_code=e.code, status=d["status"])
-                d["error"] = {"code": e.code, "message": e.message}
+                d["error"] = {
+                    "code": e.code,
+                    "message": e.message,
+                    **({"details": e.details} if e.details else {}),
+                }
                 self.save(d)
             event(
                 "playlist.write_completed",

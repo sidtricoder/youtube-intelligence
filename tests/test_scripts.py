@@ -34,9 +34,7 @@ def configured():
     )
 
 
-async def test_public_google_check_uses_anonymous_preview_and_explicit_bounded_budget(
-    tmp_path, monkeypatch
-):
+async def test_public_google_check_uses_anonymous_preview_and_google_quota(tmp_path, monkeypatch):
     module = script("check_google")
     monkeypatch.setattr(module, "Settings", configured)
     seen = []
@@ -53,8 +51,8 @@ async def test_public_google_check_uses_anonymous_preview_and_explicit_bounded_b
     assert await module.check(output) == 0
     result = json.loads(output.read_text())
     assert result["live_writes"] == 0 and result["failed"] == 0
-    assert seen[0].units_per_day == 10 and seen[0].searches_per_day == 3
-    assert seen[0].anonymous_units_per_day == 10
+    assert result["quota_enforcement"] == "google"
+    assert "general_budget" not in result and "search_budget" not in result
     assert any("preview" in item["name"].lower() for item in result["checks"])
     assert "private-secret" not in output.read_text() and "private-key" not in output.read_text()
 

@@ -193,12 +193,6 @@ class Store:
             u, s = db.execute(
                 select(self.quotas.c.units, self.quotas.c.searches).where(self.quotas.c.day == day)
             ).one()
-            if u + units > unit_limit or s + searches > search_limit:
-                raise AppError(
-                    "quota_exceeded",
-                    "Insufficient quota for the entire workflow; no API call made",
-                    429,
-                )
             db.execute(
                 update(self.quotas)
                 .where(self.quotas.c.day == day)

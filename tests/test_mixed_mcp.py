@@ -123,29 +123,29 @@ async def test_real_refresh_rotation_replay_revokes_entire_family(server):
         assert latest.status_code == 400 and latest.json()["error"] == "invalid_grant"
 
 
-async def test_anonymous_ip_header_spoof_does_not_bypass_rate_and_users_work(tmp_path):
+async def test_anonymous_calls_are_not_rate_limited_and_users_work(tmp_path):
     with running_server(tmp_path, anonymous_rate_limit=2) as wire:
         message = tool("video_summary", {"video": "aaaaaaaaaaa"})
         for ip in ("198.51.100.1", "198.51.100.2"):
             response = await rpc(wire, message, headers={"X-Forwarded-For": ip})
             assert response.status_code == 200
         denied = await rpc(wire, message, headers={"X-Forwarded-For": "198.51.100.3"})
-        assert denied.status_code == 429
-        assert len(wire.providers["public"].calls) == 2
+        assert denied.status_code == 200
+        assert len(wire.providers["public"].calls) == 3
         async with httpx.AsyncClient(base_url=wire.origin, trust_env=False) as browser:
             signed = await login(wire, browser, "alice")
             async with mcp_session(wire, signed["access_token"]) as session:
                 assert (await call(session, "recommendations"))["profile"]
 
 
-async def test_anonymous_daily_budget_cannot_be_reset_by_ip_spoof(tmp_path):
+async def test_anonymous_daily_budget_setting_is_ignored(tmp_path):
     with running_server(tmp_path, anonymous_units_per_day=1) as wire:
         message = tool("video_summary", {"video": "aaaaaaaaaaa"})
         first = await rpc(wire, message, headers={"X-Forwarded-For": "198.51.100.1"})
         assert first.status_code == 200 and "metadata_only" in first.text
         second = await rpc(wire, message, headers={"X-Forwarded-For": "198.51.100.2"})
-        assert second.status_code == 200 and "quota_exceeded" in second.text
-        assert wire.providers["public"].calls == ["videos"]
+        assert second.status_code == 200 and "metadata_only" in second.text
+        assert wire.providers["public"].calls == ["videos", "videos"]
         async with httpx.AsyncClient(base_url=wire.origin, trust_env=False) as browser:
             signed = await login(wire, browser, "bob")
             async with mcp_session(wire, signed["access_token"]) as session:

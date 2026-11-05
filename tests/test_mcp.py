@@ -125,6 +125,7 @@ async def test_two_accounts_interleaved_fr1_to_fr5_and_browser_confirmation(serv
                 "units_limit",
                 "searches_limit",
                 "max_searches_per_request",
+                "enforcement",
             }
             assert all(not p.created for p in server.providers.values())
             # Capture each user's own CSRF before writing. Completed pages have no write form.

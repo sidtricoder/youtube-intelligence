@@ -47,9 +47,13 @@ def test_settings_repr_does_not_expose_encryption_or_google_client_secrets():
         {"public_base_url": "https://public.example/path"},
     ],
 )
-def test_unsafe_settings_rejected(values):
-    with pytest.raises(ValueError):
-        Settings(_env_file=None, encryption_key=Fernet.generate_key().decode(), **values)
+def test_security_settings_rejected_and_obsolete_budget_settings_ignored(values):
+    if "public_base_url" in values:
+        with pytest.raises(ValueError):
+            Settings(_env_file=None, encryption_key=Fernet.generate_key().decode(), **values)
+    else:
+        settings = Settings(_env_file=None, encryption_key=Fernet.generate_key().decode(), **values)
+        assert all(getattr(settings, key) == value for key, value in values.items())
 
 
 def test_bootstrap_requests_exclusive_owner_only_file_creation(tmp_path, monkeypatch):

@@ -84,8 +84,8 @@ def test_postgres_quota_is_atomic_across_repository_instances(pg):
     try:
         with ThreadPoolExecutor(2) as pool:
             results = list(pool.map(reserve, [store, second]))
-        assert sum(results) == 1
-        assert Quota(store).status()["units_used"] == 1
+        assert sum(results) == 2
+        assert Quota(store).status()["units_used"] == 2
     finally:
         second.close()
 

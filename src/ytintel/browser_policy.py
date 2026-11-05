@@ -29,7 +29,7 @@ def form_redirect_policy(*redirects: str, script_nonce: str | None = None) -> st
     if script_nonce is not None:
         if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", script_nonce):
             raise ValueError("Invalid script nonce")
-        script = "script-src 'nonce-" + script_nonce + "'; "
+        script = "script-src 'nonce-" + script_nonce + "'; connect-src 'self'; "
     return (
         "default-src 'none'; "
         + script

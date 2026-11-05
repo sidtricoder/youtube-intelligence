@@ -97,15 +97,15 @@ def test_unknown_defaults_protected_and_untrusted_forwarded_ip_ignored():
     assert client_address(scope, ("192.0.2.0/24",)) == "198.51.100.42"
 
 
-async def test_batch_search_cap_checked_before_any_dispatch(gate):
+async def test_batch_searches_dispatch_without_application_cap(gate):
     client, seen = gate
     payload = [
         {"jsonrpc": "2.0", "id": n, "method": "tools/call", "params": {"name": "similar_videos"}}
         for n in range(4)
     ]
     response = await client.post("/mcp/", json=payload)
-    assert response.status_code == 429
-    assert not seen
+    assert response.status_code == 200
+    assert len(seen) == 4
 
 
 async def test_bearer_scheme_is_case_insensitive_using_sdk_verifier(gate):

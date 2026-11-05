@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = Field(default="", repr=False)
     redirect_uri: str | None = None
+    # Deprecated compatibility fields: accepted but never enforced.
     units_per_day: int = 10000
     searches_per_day: int = 100
     user_units_per_day: int = 1000
@@ -44,8 +45,6 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_configuration(self):
-        if self.units_per_day < 0 or self.searches_per_day < 0:
-            raise ValueError("Quota limits cannot be negative")
         origin = (self.public_base_url or self.render_external_url).rstrip("/")
         if origin:
             parsed = urlparse(origin)
@@ -78,17 +77,6 @@ class Settings(BaseSettings):
             )
         if self.anonymous_units_per_day is None:
             self.anonymous_units_per_day = int(self.units_per_day * 0.3)
-        if (
-            min(
-                self.user_units_per_day,
-                self.anonymous_units_per_day,
-                self.max_searches_per_request,
-                self.anonymous_rate_limit,
-                self.user_rate_limit,
-            )
-            < 0
-        ):
-            raise ValueError("Budgets and rate limits cannot be negative")
         from ipaddress import ip_network
 
         for item in self.trusted_proxies.split(","):

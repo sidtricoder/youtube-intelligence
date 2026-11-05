@@ -2,8 +2,6 @@
 
 import ipaddress
 import json
-import time
-from collections import defaultdict, deque
 
 from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend
 from mcp.server.auth.provider import ProviderTokenVerifier
@@ -67,7 +65,7 @@ class MCPGate:
         self.bearer = BearerAuthBackend(
             ProviderTokenVerifier(auth), resource_server_url=AnyHttpUrl(self.issuer + "/mcp/")
         )
-        self.windows = windows if windows is not None else defaultdict(deque)
+        self.windows = {}  # Legacy constructor options are ignored; no application rate limits.
 
     def challenge(self, status=401):
         event(
@@ -85,25 +83,11 @@ class MCPGate:
             headers={"WWW-Authenticate": header, "Cache-Control": "no-store"},
         )
 
-    def allow_rate(self, key, limit):
-        now = time.monotonic()
-        # Bound retained keys; expired identities need not accumulate indefinitely.
-        if len(self.windows) > 4096:
-            for old_key in list(self.windows):
-                if not self.windows[old_key] or self.windows[old_key][-1] < now - 60:
-                    del self.windows[old_key]
-        window = self.windows[key]
-        while window and window[0] <= now - 60:
-            window.popleft()
-        if len(window) >= limit:
-            event("rate_limit.rejected", warning=True, error_code="rate_limited")
-            return False
-        window.append(now)
-        return True
-
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope.get("path", "").rstrip("/") != "/mcp":
             return await self.app(scope, receive, send)
+        if scope.get("path") == "/mcp":
+            scope = {**scope, "path": "/mcp/", "raw_path": b"/mcp/"}
         headers = dict(scope.get("headers", []))
         token = None
         if b"authorization" in headers:
@@ -179,37 +163,7 @@ class MCPGate:
                 return await self.challenge(403)(scope, receive, send)
         else:
             parsed = None
-        if isinstance(parsed, list):
-            search_costs = {
-                "similar_videos": 1,
-                "similar_channels": 1,
-                "propose_playlist": 1,
-                "playlist_from_request": 1,
-                "video_to_playlist": 1,
-                "create_playlist_draft": 1,
-                "recommendations": 3,
-            }
-            searches = sum(
-                search_costs.get(item.get("params", {}).get("name"), 0)
-                for item in parsed
-                if item["method"] == "tools/call"
-            )
-            if searches > self.max_searches:
-                return await JSONResponse(
-                    {
-                        "error": "quota_exceeded",
-                        "message": "Request search cap exceeded; split the request or retry later.",
-                    },
-                    429,
-                )(scope, receive, send)
         ip = client_address(scope, self.trusted_proxies)
-        key = ("user", token.user_id) if token else ("ip", ip)
-        if not self.allow_rate(key, self.user_rate_limit if token else self.rate_limit):
-            return await JSONResponse(
-                {"error": "rate_limited", "message": "Sign in or retry later."},
-                429,
-                headers={"Retry-After": "60"},
-            )(scope, receive, send)
         try:
             context = await self.context_factory(token, ip)
         except AppError as exc:

@@ -33,11 +33,11 @@ Fernet authenticated encryption protects stored credentials and personal payload
 | Prompt injection in metadata | Treat titles/descriptions/tags as data; escaped UI text; no tool can approve a write |
 | Client metadata SSRF | CIMD unsupported and unadvertised; no arbitrary document URL fetch |
 | Credential rotation/revocation | Expiring app credentials, refresh grant failure handled safely, per-user disconnect; coordinated encryption-key rotation |
-| Public quota exhaustion | Atomic global/anonymous/IP/search reservations, rate limits and per-user budgets |
+| Public quota exhaustion | Google enforces project limits; by explicit user request the app has no budgets/rate limits, so callers share upstream capacity |
 
-Quota is reserved transactionally before provider calls. Attempted upstream calls count even when they fail; unused reservations are refunded. Pacific-midnight rollover and a separate search ceiling are enforced. The default anonymous pool is 30% of the daily general-unit budget; signed-in users default to 1,000 units/day. The ledger cannot see unrelated software consuming the Google project.
+Google alone enforces quota/rate limits. Transactional counters record attempted calls and account-scoped usage but never reject based on usage or estimates. Unused metering reservations are refunded. The explicit 2.4.0 requirement removes local fair-share, anonymous, daily and per-request search budgets. The ledger cannot see unrelated software consuming the Google project.
 
-Trust proxy headers only from explicitly configured ingress addresses. Set `YT_TRUSTED_PROXIES` to explicit comma-separated IPs/CIDRs only (empty by default), never `*`; spoofed forwarding headers would defeat IP quotas and origin assumptions. Configure the public HTTPS origin and accepted MCP host/origin explicitly. Do not enable wildcard CORS. CSP, frame denial, `nosniff` and `strict-origin` referrer headers (no path/query disclosure) protect the browser shell. Keep access/debug logs from capturing bearer credentials, OAuth codes, query metadata or personal responses.
+Trust proxy headers only from explicitly configured ingress addresses. Set `YT_TRUSTED_PROXIES` to explicit comma-separated IPs/CIDRs only (empty by default), never `*`; forwarding headers are not an authentication source. Configure the public HTTPS origin and accepted MCP host/origin explicitly. Do not enable wildcard CORS. CSP, frame denial, `nosniff` and `strict-origin` referrer headers (no path/query disclosure) protect the browser shell. Keep access/debug logs from capturing bearer credentials, OAuth codes, query metadata or personal responses.
 
 Only `.env.example` belongs in source/handoff packages. Existing `.env` and data must not be read into reports, edited or included in archives. Store database URLs, Google API/client secrets and the Fernet key in Render's secret environment. Report security issues privately without credentials or personal account data.
 
@@ -55,10 +55,12 @@ On POSIX, new local configuration requests owner-only mode 0600. Windows stat mo
 represent NTFS access-control lists; privacy there depends on the containing directory's Windows
 ACLs. The functional bootstrap, Fernet and exclusive-create checks run on both CI platforms.
 
-## Browser presentation (2.2.0)
+## Browser presentation (current 2.4.0)
 
-Consent uses a native HTML dialog with CSRF-protected Allow/Cancel form submissions. Escape submits denial; denial consumes the transaction without issuing an authorization code. The only inline executable script is fixed dialog behavior authorized by a per-response CSP nonce. No untrusted metadata enters that script. Form actions retain their exact validated OAuth destination origins. All displayed client names and video metadata are escaped; browser result links encode identifiers. API/MCP errors retain protocol responses rather than HTML. This UI does not change browser-session/token separation, per-user ownership checks or typed playlist approval.
+Consent uses browser-owned window.confirm; playlist confirmation uses window.prompt only after a user gesture. The same own-session/CSRF/account checks and typed CREATE/RESUME phrase remain. Fetch reports results through a browser alert without page navigation. Script data is JSON-encoded with HTML-sensitive characters escaped, execution requires a fresh CSP nonce and fetch is restricted to self. No unsafe-inline JavaScript or arbitrary form/fetch destinations are enabled. Plain forms remain the no-JavaScript fallback.
 
 ## Operational diagnostics (2.3.0)
 
 Structured application events use server-generated request IDs and allow-listed field names. They exclude identities, raw arguments, metadata, dynamic IDs, client IPs, URL queries, cookies, headers, token values, provider bodies and exception text. SDK protocol/error chatter is suppressed. Unexpected HTTP failures produce a generic correlated 500 rather than a credential-bearing exception dump. Access logging stays disabled. Logs expose aggregate processing/counts to the operator; restrict Render log access and retention. No log event grants authorization or substitutes for token/session verification.
+
+The MCP transport explicitly allows the Claude/ChatGPT HTTPS origins while still checking the server Host. This is not wildcard CORS or permission to bypass authentication. /mcp is an internal path alias for canonical /mcp/; resource/audience comparisons remain exact and other audiences are rejected.

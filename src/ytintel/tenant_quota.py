@@ -1,10 +1,9 @@
-"""Atomic project, anonymous-pool and individual daily reservations."""
+"""Per-account usage accounting only. Google alone enforces quota."""
 
 from contextlib import contextmanager
 
 from sqlalchemy import Column, Integer, String, Table, select, update
 
-from .errors import AppError
 from .observability import event
 from .quota import Quota, Ticket, active_ticket
 
@@ -60,18 +59,9 @@ class TenantQuota(Quota):
     def reserve(self, units, searches):
         if units < 0 or searches < 0:
             raise ValueError("Quota reservations cannot be negative")
-        if searches > self.max_searches:
-            event(
-                "quota.rejected",
-                warning=True,
-                error_code="request_search_cap",
-                units=units,
-                searches=searches,
-            )
-            raise AppError("quota_exceeded", "Too many searches in one request", 429)
         day = self.day()
         with self.store.tx() as db:
-            for key, unit_limit, search_limit in self._scopes():
+            for key, _, _ in self._scopes():
                 db.execute(
                     self.store._insert(self.ledger)
                     .values(
@@ -86,24 +76,6 @@ class TenantQuota(Quota):
                 u, s = db.execute(
                     select(self.ledger.c.units, self.ledger.c.searches).where(self._where(day, key))
                 ).one()
-                if u + units > unit_limit or s + searches > search_limit:
-                    event(
-                        "quota.rejected",
-                        warning=True,
-                        error_code="quota_exceeded",
-                        scope_class="user" if key.startswith("user:") else key,
-                        units=units,
-                        searches=searches,
-                    )
-                    raise AppError(
-                        "quota_exceeded",
-                        (
-                            "Anonymous quota exhausted; sign in or retry after the daily reset"
-                            if self.anonymous
-                            else "Insufficient quota for the entire workflow; no API call made"
-                        ),
-                        429,
-                    )
                 db.execute(
                     update(self.ledger)
                     .where(self._where(day, key))
@@ -145,9 +117,8 @@ class TenantQuota(Quota):
             day=day,
             units_used=usage[0],
             searches_used=usage[1],
-            units_limit=self.anonymous_units if self.anonymous else self.user_units,
-            searches_limit=self._anonymous_search_limit()
-            if self.anonymous
-            else max(3, self.searches // 10),
-            max_searches_per_request=self.max_searches,
+            units_limit=None,
+            searches_limit=None,
+            max_searches_per_request=None,
+            enforcement="google",
         )

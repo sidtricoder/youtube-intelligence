@@ -14,6 +14,7 @@ from pydantic import AnyUrl
 from tests.fakes import FixtureProvider
 from ytintel.app import create_app
 from ytintel.config import Settings
+from ytintel.errors import AppError
 from ytintel.identity import READ_SCOPE, WRITE_SCOPE
 
 
@@ -29,7 +30,9 @@ def create_browser_app():
         public_base_url="",
         redirect_uri="http://localhost:8000/oauth/callback",
     )
-    app = create_app(settings, provider=FixtureProvider())
+    provider = FixtureProvider()
+    original_add = provider.add_video
+    app = create_app(settings, provider=provider)
     user = app.state.security.upsert_user("synthetic-browser-account")
     app.state.security.save_google(
         user,
@@ -52,6 +55,23 @@ def create_browser_app():
     @app.get("/__fixture")
     async def synthetic_fixture():
         return app.state.browser_fixture
+
+    @app.post("/__write_failure")
+    async def write_failure(mode: str):
+        if mode == "clear":
+            provider.add_video = original_add
+        else:
+
+            async def reject(*args):
+                raise AppError(
+                    "quota_exceeded" if mode == "partial" else "upstream_unavailable",
+                    "Synthetic Google failure",
+                    429 if mode == "partial" else 503,
+                    details={"source": "google", "reason": "quotaExceeded", "upstream_status": 403},
+                )
+
+            provider.add_video = reject
+        return {"status": "configured"}
 
     @app.get("/__consent_fixture")
     async def synthetic_consent_fixture():

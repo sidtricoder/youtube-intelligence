@@ -73,6 +73,7 @@ async def test_partial_known_failure_resumes_without_duplicate_create(service):
     service.provider.add_video = original
     result = await service.resume(d["id"], "RESUME")
     assert result["status"] == "complete" and len(service.provider.created) == 1
+    assert "error" not in result
 
 
 async def test_ambiguous_write_stops_retry(service):
@@ -88,15 +89,10 @@ async def test_ambiguous_write_stops_retry(service):
         await service.resume(d["id"], "RESUME")
 
 
-async def test_quota_rejects_before_provider_call(service):
+async def test_zero_app_budgets_do_not_prevent_provider_calls(service):
     service.quota = Quota(service.store.raw, units=0, searches=0)
-
-    async def forbidden(*args):
-        pytest.fail("provider must not be called")
-
-    service.provider.search = forbidden
-    with pytest.raises(AppError):
-        await service.propose(Constraints(topic="Python", total_seconds=600, max_seconds=600))
+    draft = await service.propose(Constraints(topic="Python", total_seconds=600, max_seconds=600))
+    assert draft["videos"] and draft["status"] == "pending"
 
 
 async def test_personalized_draft_excludes_already_liked_and_saved(service):
@@ -110,18 +106,11 @@ async def test_personalized_draft_excludes_already_liked_and_saved(service):
     assert known.intersection(video["id"] for video in unfiltered["videos"])
 
 
-async def test_personalized_draft_reserves_entire_profile_and_search_before_calls(service):
-    service.quota = Quota(service.store.raw, units=46, searches=100)
-
-    async def forbidden(*args):
-        pytest.fail("provider called before entire workflow reservation")
-
-    service.provider.profile = forbidden
-    service.provider.search = forbidden
-    service.provider.videos = forbidden
-    with pytest.raises(AppError) as error:
-        await service.propose(Constraints(topic="Python", total_seconds=1800, max_seconds=1200))
-    assert error.value.code == "quota_exceeded"
+async def test_personalized_discovery_is_not_rejected_by_former_reservation(service):
+    service.quota = Quota(service.store.raw, units=0, searches=0)
+    draft = await service.propose(Constraints(topic="Python", total_seconds=1800, max_seconds=1200))
+    assert draft["videos"]
+    assert not service.provider.created
 
 
 async def test_unfiltered_draft_and_stateless_preview_never_read_profile(service):

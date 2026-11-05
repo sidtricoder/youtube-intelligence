@@ -75,12 +75,11 @@ class GoogleProvider:
             credentials = self.context.credentials if self.context is not None else self.token
             headers["Authorization"] = "Bearer " + await credentials()
         ticket = active_ticket.get()
-        if ticket is None:
-            raise AppError("quota_reservation", "API calls require a workflow reservation", 500)
-        ticket.consume(
-            0 if endpoint == "search" else (50 if body is not None else 1),
-            1 if endpoint == "search" else 0,
-        )
+        if ticket is not None:
+            ticket.consume(
+                0 if endpoint == "search" else (50 if body is not None else 1),
+                1 if endpoint == "search" else 0,
+            )
         event("youtube.started", endpoint=operation, method=method, public=public)
         try:
             r = await self.client.request(
@@ -141,7 +140,16 @@ class GoogleProvider:
                 error_code=code,
                 duration_ms=round((time.monotonic() - started) * 1000, 2),
             )
-            raise AppError(code, "YouTube request failed: " + code, status)
+            raise AppError(
+                code,
+                "YouTube request failed: " + code,
+                status,
+                details={
+                    "source": "google",
+                    "reason": reason if reason in codes else "unclassified",
+                    "upstream_status": r.status_code,
+                },
+            )
         result = r.json()
         event(
             "youtube.completed",

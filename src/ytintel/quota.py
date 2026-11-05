@@ -1,11 +1,9 @@
-"""Atomic project-wide quota reservations. Crashes conservatively keep reservations charged."""
+"""Usage metering only; reservations never deny a Google API request."""
 
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
 from zoneinfo import ZoneInfo
-
-from .errors import AppError
 
 active_ticket = ContextVar("quota_ticket", default=None)
 
@@ -16,8 +14,6 @@ class Ticket:
         self.used_units, self.used_searches = 0, 0
 
     def consume(self, units=0, searches=0):
-        if self.used_units + units > self.units or self.used_searches + searches > self.searches:
-            raise AppError("quota_reservation", "Workflow quota reservation exhausted", 429)
         self.used_units += units
         self.used_searches += searches
 
@@ -49,6 +45,7 @@ class Quota:
             day=self.day(),
             units_used=row[0],
             searches_used=row[1],
-            units_limit=self.units,
-            searches_limit=self.searches,
+            units_limit=None,
+            searches_limit=None,
+            enforcement="google",
         )

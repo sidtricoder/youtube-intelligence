@@ -15,6 +15,7 @@ async function main() {
     { cwd: root, env: { ...process.env, PYTHONPATH: [root, path.join(root, 'src')].join(path.delimiter),
       YT_DB_PATH: path.join(temp, 'browser.db') } });
   server.stderr.on('data', data => process.stderr.write(data));
+  server.stdout.on('data',()=>{});
   const base = 'http://localhost:8000';
   let browser;
   try {
@@ -35,6 +36,7 @@ async function main() {
     await context.addCookies([{ name: 'yt_session', value: fixture.cookie, url: base,
       httpOnly: true, sameSite: 'Lax' }]);
     const page = await context.newPage();
+    page.setDefaultTimeout(10000);
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     if(process.env.YTINTEL_PREVIEW_DIR) {
@@ -56,15 +58,29 @@ async function main() {
       await page.setViewportSize({width:1365,height:1000});
     }
     assert.equal(await page.locator('input[name=csrf]').inputValue(), fixture.csrf);
-    await page.locator('input[name=confirmation]').fill('yes');
-    await Promise.all([page.waitForNavigation(), page.getByRole('button', { name: 'Confirm playlist in my account' }).click()]);
-    assert((await page.locator('body').textContent()).includes('Type the displayed confirmation phrase'), (await page.locator('body').textContent()).slice(0,500));
-    await page.goto(approval);
-    await page.locator('input[name=confirmation]').fill('CREATE');
-    await Promise.all([page.waitForNavigation(), page.getByRole('button', { name: 'Confirm playlist in my account' }).click()]);
-    assert((await page.locator('body').textContent()).includes('complete'));
-    assert(await page.getByRole('link', {name:'Open playlist on YouTube ↗'}).isVisible());
-    if(process.env.YTINTEL_PREVIEW_DIR) await page.screenshot({path:path.join(process.env.YTINTEL_PREVIEW_DIR, 'complete-desktop.png'),fullPage:true});
+    async function nativeAction(buttonName, steps) {
+      let next = page.waitForEvent('dialog');
+      console.log('Browser action: '+buttonName+' '+steps[0].type);
+      const click = page.getByRole('button', {name:buttonName}).click();
+      click.catch(()=>{});
+      for (let index=0;index<steps.length;index++) {
+        const dialog = await next;
+        console.log('Browser dialog: '+dialog.type());
+        const step=steps[index];
+        assert.equal(dialog.type(),step.type);
+        if(step.includes) assert(dialog.message().includes(step.includes),dialog.message());
+        if(index+1<steps.length) next=page.waitForEvent('dialog');
+        if(step.dismiss) await dialog.dismiss(); else await dialog.accept(step.value);
+      }
+      await click;
+    }
+    // Cancel never sends a write; a wrong typed phrase stays a server rejection.
+    await nativeAction('Confirm playlist in my account',[{type:'prompt',dismiss:true}]);
+    await nativeAction('Confirm playlist in my account',[{type:'prompt',value:'yes'},{type:'alert',includes:'Type the displayed confirmation phrase'}]);
+    assert.equal(page.url(),approval);
+    await nativeAction('Confirm playlist in my account',[{type:'prompt',value:'CREATE',includes:'Type CREATE'},{type:'alert',includes:'Playlist complete'}]);
+    assert((await page.locator('#result').textContent()).includes('complete'));
+    assert.equal(page.url(),approval,'fetch result must not navigate to another page');
     const replay = await fetch(approval, { method: 'POST', headers: {
       Cookie: 'yt_session=' + fixture.cookie, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ csrf: fixture.csrf, confirmation: 'CREATE' }) });
@@ -72,19 +88,31 @@ async function main() {
     await page.goto(approval);
     await page.setViewportSize({ width: 390, height: 844 });
     assert(await page.locator('h1').isVisible());
+    for(const state of ['partial','uncertain']) {
+      const failedDraft=await (await fetch(base+'/api/drafts',{method:'POST',headers,body:JSON.stringify({topic:'Python',total_seconds:1800,max_seconds:900})})).json();
+      await fetch(base+'/__write_failure?mode='+state,{method:'POST'});
+      await page.goto(base+'/approve/'+failedDraft.id);
+      await nativeAction('Confirm playlist in my account',[{type:'prompt',value:'CREATE'},{type:'alert',includes:'Synthetic Google failure'}]);
+      assert(await page.getByRole('button',{name:'Confirm playlist in my account'}).isHidden(),'stale CREATE must not remain active after '+state);
+      await fetch(base+'/__write_failure?mode=clear',{method:'POST'});
+      await page.goto(base+'/approve/'+failedDraft.id);
+      if(state==='partial') {
+        await nativeAction('Confirm playlist in my account',[{type:'prompt',value:'RESUME',includes:'Type RESUME'},{type:'alert',includes:'Playlist complete'}]);
+        assert((await page.locator('#result').textContent()).includes('complete'));
+      } else {
+        assert.equal(await page.getByRole('button',{name:'Confirm playlist in my account'}).count(),0,'uncertain writes have no retry form');
+      }
+    }
     // A real form POST must follow its OAuth redirect to a different origin.
     const cancelled = await (await fetch(base + '/__consent_fixture')).json();
     await page.goto(base + cancelled.url);
-    assert(await page.locator('#consent-dialog').evaluate(dialog => dialog.matches(':modal')));
-    assert.equal(await page.locator('dialog').getAttribute('aria-labelledby'), 'consent-title');
-    await page.keyboard.press('Escape');
-    await page.waitForURL(url => url.hostname === '127.0.0.1' && url.searchParams.get('error') === 'access_denied');
+    await nativeAction('Allow this client',[{type:'confirm',dismiss:true}]);
+    try {await page.waitForURL(url => url.hostname === '127.0.0.1' && url.searchParams.get('error') === 'access_denied');} catch {throw new Error(JSON.stringify({stage:'cancel',url:page.url().split('?')[0],body:(await page.locator('body').textContent()).slice(0,500)}));}
     assert.equal(new URL(page.url()).searchParams.get('code'), null);
     const consent = await (await fetch(base + '/__consent_fixture')).json();
     const consentPage = await page.goto(base + consent.url);
     assert(consentPage.headers()['content-security-policy'].includes(new URL(consent.redirect_uri).origin));
     assert(consentPage.headers()['content-security-policy'].includes("script-src 'nonce-"));
-    assert(await page.locator('#consent-dialog').evaluate(dialog => dialog.matches(':modal')));
     assert.equal(await page.locator('body').evaluate(body => body.scrollWidth > innerWidth), false);
     if(process.env.YTINTEL_PREVIEW_DIR) {
       fs.mkdirSync(process.env.YTINTEL_PREVIEW_DIR, {recursive:true});
@@ -94,7 +122,7 @@ async function main() {
     }
     const cspErrors = [];
     page.on('console', msg => { if (msg.type() === 'error' && /Content Security Policy|form-action/i.test(msg.text())) cspErrors.push(msg.text()); });
-    await page.getByRole('button', { name: 'Allow this client' }).click();
+    await nativeAction('Allow this client',[{type:'confirm',includes:'Connect'}]);
     try { await page.waitForURL('http://127.0.0.1:8000/__client_callback?**', { timeout: 4000 }); } catch { throw new Error(JSON.stringify({url:page.url().split('?')[0],body:(await page.locator('body').textContent()).slice(0,500),cspErrors})); }
     const code = new URL(page.url()).searchParams.get('code');
     assert(code, 'OAuth callback must contain a code');
@@ -123,7 +151,7 @@ async function main() {
     assert((await page.locator('body').textContent()).includes('Synthetic Google write consent'));
     assert.deepEqual(cspErrors, []);
     assert.deepEqual(errors, []);
-    console.log('PASS: Chromium own-session approval, CSRF form, typed confirmation, no write on wrong phrase, complete playlist, replay refusal, mobile page, native modal/keyboard cancellation, cross-origin AI consent callback/token exchange and Google write consent; no CSP violations or JavaScript errors.');
+    console.log('PASS: Chromium own-session approval, CSRF form, typed confirmation, no write on wrong phrase, complete playlist, replay refusal, mobile page, native browser confirm/prompt/alert and cancellation, cross-origin AI consent callback/token exchange and Google write consent; no CSP violations or JavaScript errors.');
   } finally {
     if (browser) await browser.close();
     server.kill();

@@ -120,24 +120,25 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app):
         async with mcp.session_manager.run():
-            event("server.started", version="2.3.0")
+            event("server.started", version="2.4.0")
+            event("quota.policy", outcome="google_only")
             yield
-        event("server.stopping", version="2.3.0")
+        event("server.stopping", version="2.4.0")
         await client.aclose()
         raw.close()
 
-    app = FastAPI(title="YouTube Intelligence", version="2.3.0", lifespan=lifespan)
+    app = FastAPI(title="YouTube Intelligence", version="2.4.0", lifespan=lifespan)
     app.state.store, app.state.security, app.state.auth = raw, security, auth
     app.state.mcp, app.state.credentials = mcp, credentials
     app.state.context_factory, app.state.service_factory = context_factory, service_factory
 
     install_http_boundary(app, auth, issuer)
 
-    @app.get("/health")
+    @app.api_route("/health", methods=["GET", "HEAD"])
     async def health():
-        return {"status": "ok", "provider": "youtube"}
+        return {"status": "ok", "provider": "youtube", "version": app.version}
 
-    @app.get("/", response_class=HTMLResponse)
+    @app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
     async def home():
         return ui.home_page(issuer)
 

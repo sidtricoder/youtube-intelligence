@@ -73,30 +73,25 @@ async def test_anonymous_preview_has_no_draft_or_user_writes(raw):
         await app.propose(Constraints(topic="Python", total_seconds=1800, max_seconds=1200))
 
 
-def test_quota_enforces_fair_share_and_global_atomically(raw):
-    a = TenantQuota(raw, "alice", units=10, user_units=3)
-    b = TenantQuota(raw, "bob", units=10, user_units=3)
+def test_usage_is_account_isolated_without_fair_share_enforcement(raw):
+    a = TenantQuota(raw, "alice", units=0, user_units=0)
+    b = TenantQuota(raw, "bob", units=0, user_units=0)
     with a.reserve(3, 0) as ticket:
-        ticket.consume(3)
-    with pytest.raises(AppError):
-        with a.reserve(1, 0):
-            pytest.fail("over budget")
+        ticket.consume(300)
+    with a.reserve(1, 0) as ticket:
+        ticket.consume(1)
     with b.reserve(3, 0) as ticket:
         ticket.consume(3)
-    assert b.status()["units_used"] == 3
-    assert a.status()["units_used"] == 3
+    assert a.status()["units_used"] == 301 and b.status()["units_used"] == 3
+    assert a.status()["units_limit"] is None
 
 
-async def test_fair_quota_rejects_before_provider(raw):
+async def test_personalized_provider_runs_despite_former_fair_share_limit(raw):
     app = service(raw, "alice")
-    app.quota = TenantQuota(raw, "alice", user_units=1)
-
-    async def forbidden(*args):
-        pytest.fail("provider called")
-
-    app.provider.search = forbidden
-    with pytest.raises(AppError):
-        await app.propose(Constraints(topic="Python", total_seconds=600, max_seconds=600))
+    app.quota = TenantQuota(raw, "alice", user_units=0)
+    assert (await app.propose(Constraints(topic="Python", total_seconds=600, max_seconds=600)))[
+        "videos"
+    ]
 
 
 async def test_public_requests_never_use_bearer_and_private_cache_is_scoped(raw):
@@ -126,28 +121,26 @@ async def test_public_requests_never_use_bearer_and_private_cache_is_scoped(raw)
     assert all(r.headers["authorization"] == "Bearer private-token" for r in requests[1:])
 
 
-def test_request_search_cap_is_separate_from_daily_fair_share(raw):
-    quota = TenantQuota(raw, "alice")
+def test_search_accounting_does_not_cap_single_requests(raw):
+    quota = TenantQuota(raw, "alice", max_searches=0, searches=0)
     for _ in range(2):
-        with quota.reserve(0, 3) as ticket:
-            ticket.consume(searches=3)
-    assert quota.status()["searches_used"] == 6
-    with pytest.raises(AppError):
-        with quota.reserve(0, 4):
-            pytest.fail("request cap must apply")
+        with quota.reserve(0, 0) as ticket:
+            ticket.consume(searches=40)
+    assert quota.status()["searches_used"] == 80
+    assert quota.status()["max_searches_per_request"] is None
 
 
-def test_anonymous_pool_cannot_exhaust_signed_in_search_budget(raw):
-    anonymous = TenantQuota(raw, "ip", searches=10, anonymous=True)
-    with anonymous.reserve(0, 3) as ticket:
-        ticket.consume(searches=3)
-    with pytest.raises(AppError, match="sign in"):
-        with TenantQuota(raw, "different-ip", searches=10, anonymous=True).reserve(0, 1):
-            pytest.fail("shared anonymous pool exhausted")
-    signed_in = TenantQuota(raw, "alice", searches=10)
+def test_anonymous_and_signed_in_usage_never_blocks_other_callers(raw):
+    anonymous = TenantQuota(raw, "ip", searches=0, anonymous_units=0, anonymous=True)
+    with anonymous.reserve(0, 30) as ticket:
+        ticket.consume(searches=30)
+    with TenantQuota(raw, "other-ip", searches=0, anonymous=True).reserve(0, 5) as ticket:
+        ticket.consume(searches=5)
+    signed_in = TenantQuota(raw, "alice", searches=0)
     with signed_in.reserve(0, 3) as ticket:
         ticket.consume(searches=3)
     assert signed_in.status()["searches_used"] == 3
+    assert anonymous.status()["searches_used"] == 35
     assert "global" not in str(signed_in.status())
 
 
@@ -165,8 +158,8 @@ def test_tenant_quota_concurrent_global_limit_and_rollback(raw):
             return False
 
     with ThreadPoolExecutor(2) as pool:
-        assert sum(pool.map(reserve, quotas)) == 1
-    assert sum(quota.status()["units_used"] for quota in quotas) == 1
+        assert sum(pool.map(reserve, quotas)) == 2
+    assert sum(quota.status()["units_used"] for quota in quotas) == 2
 
 
 def test_tenant_reservation_failure_rolls_back_global_charge(raw):
@@ -174,9 +167,8 @@ def test_tenant_reservation_failure_rolls_back_global_charge(raw):
     bob = TenantQuota(raw, "bob", units=2, user_units=1)
     with alice.reserve(1, 0) as ticket:
         ticket.consume(1)
-    with pytest.raises(AppError):
-        with alice.reserve(1, 0):
-            pytest.fail("fair share exceeded")
+    with alice.reserve(1, 0) as ticket:
+        ticket.consume(1)
     with bob.reserve(1, 0) as ticket:
         ticket.consume(1)
     assert bob.status()["units_used"] == 1
@@ -285,7 +277,7 @@ def test_deleted_user_invalidates_scoped_store(raw):
 
 def test_explicit_anonymous_budget_scales_search_budget(raw):
     quota = TenantQuota(raw, "public", units=10, searches=3, anonymous_units=10, anonymous=True)
-    assert quota.status()["searches_limit"] == 3
+    assert quota.status()["searches_limit"] is None
     with quota.reserve(1, 1) as ticket:
         ticket.consume(1, 1)
     assert quota.status()["searches_used"] == 1

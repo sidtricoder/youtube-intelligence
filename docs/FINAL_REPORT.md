@@ -1,4 +1,4 @@
-# Final multi-account/lazy-auth report — version 2.3.0
+# Final multi-account/lazy-auth report — version 2.4.0
 
 ## Result and verification
 
@@ -11,12 +11,12 @@ Observed final checks (Python 3.12.14, MCP SDK 1.30.0):
 
 | Check | Result |
 |---|---|
-| `pytest --cov=ytintel --cov-report=term --cov-fail-under=85` | **254 passed, 10 skipped, 0 failed; 91.83% statement coverage** |
+| `pytest --cov=ytintel --cov-report=term --cov-fail-under=85` | **265 passed, 10 skipped, 0 failed; 91.99% statement coverage** |
 | `ruff check src tests scripts` | Passed |
-| `ruff format --check src tests scripts` | Passed (71 Python files) |
+| `ruff format --check src tests scripts` | Passed (74 Python files) |
 | Official MCP client over real TCP | Anonymous and two interleaved synthetic Google identities; FR-1 through FR-5, OAuth/PKCE, refresh replay, isolation and own-browser approvals passed |
 | Chromium `node scripts/browser_smoke.cjs` | Own-session/CSRF, wrong phrase refusal, CREATE, replay 409, mobile, modal/Escape denial, cross-origin callback/token and Google consent passed |
-| Wheel build and isolated installed import | Version 2.3.0 built; imported from site-packages; health and both discovery documents passed |
+| Wheel build and isolated installed import | Version 2.4.0 built; imported from site-packages; health and both discovery documents passed |
 | SQLite migration/reference DDL | Idempotent migration tested; reference DDL applied twice below during archive validation |
 | Secret-pattern/source scan | No configured API keys, database passwords or private-key material found; no `.env`/database in archive |
 | Independent scoped security review | Credential races and stale authority fixed; 71 focused regressions passed for the latest scope/duration review; no remaining critical/important finding in final scoped recheck |
@@ -39,8 +39,8 @@ Starlette/httpx TestClient deprecation warning; it does not fail tests.
 - Account-bound immutable context and persistent authorization generation. Concurrent refresh,
   old Google failures, stale browser callbacks, stale contexts, code issuance/redemption and
   session creation cannot restore revoked authority or revoke a newer grant.
-- Separate encrypted user caches/drafts, API-key-only public metadata cache, own quota/status,
-  anonymous aggregate pool, trusted-proxy IP policy, per-user rates and pre-call quota checks.
+- Separate encrypted user caches/drafts, API-key-only public metadata cache and own usage status.
+  Google alone enforces quotas and rates; local budgets/caps were removed by explicit request.
 - Public previews store no user state; personal drafts exclude sampled liked/saved videos by
   default (`exclude_saved=False` opts out). No transcript/watch-history claim is made.
 - Disconnect revokes Google access where reachable and deletes only that user's credentials,
@@ -206,3 +206,17 @@ JSON stdout events cover request/protocol/tool/auth/quota/cache/provider/discove
 Ten new observability cases and the regional-language regression were added. Red runs observed absent correlation/events, opaque language errors, SDK type rejection without safe diagnostics, missing schema guidance, exact-only language mismatch, and unsafe pre/post-response exception behavior. All now pass. No pre-existing isolation test was removed or weakened. Scoped independent review found a post-start exception-chain risk; failing regressions reproduced it and the fix passed final recheck with no remaining finding.
 
 Final local suite: 254 passed, 10 optional PostgreSQL tests skipped, 91.83% coverage. Ruff check and formatting pass for 71 Python files. Chromium consent/approval/mobile suite passes. Installed 2.3.0 wheel source bytes, imports, HTTP health, OAuth discovery and correlation headers match. All upstream account and YouTube operations remain synthetic in verification; the original deployed failing request cannot be replayed without its actual tool arguments. Render deployment and real Google/YouTube behavior were not exercised.
+
+## 2.4.0 current final changes
+
+The user explicitly superseded original TQ-6/fair-share enforcement: all app daily budgets, user/anonymous allocations, per-request search caps and request-rate limits are removed. Existing quota configuration is accepted but ignored, including zero/negative values. Quota and tenant ledger modules retain informational accounting only. Direct Google provider calls do not require a quota ticket. Google quota/rate failures preserve their safe source, reason and upstream HTTP status to MCP/REST and playlist_status; raw bodies and credentials remain excluded.
+
+Browser presentation is plain: home plus browser-owned confirm/prompt/alert boxes. The short own-session approval document uses nonce-authorized, same-origin CSRF fetch without navigating to a custom result page. Cancel/no-script fallback, account matching, immutable exact video review, typed CREATE/RESUME, replay protection and uncertain-write no-retry remain. Partial results hide stale CREATE; a fresh own-page review enables explicit RESUME. Successful resume clears the previous error.
+
+Offline reproduction confirmed the previous SDK Origin allow-list rejected Claude-origin initialize/list after OAuth; Claude and ChatGPT exact HTTPS origins are now explicitly allowed, arbitrary origins/hosts remain refused. The /mcp alias no longer redirects, while the audience/resource remains canonical /mcp/. The newly supplied deployment log proves version2.3 logging already worked and recorded no MCP/OAuth attempt. HEAD probes returned405; GET/HEAD home/health now succeed and health identifies2.4.0. We did not infer a live Claude root cause solely from that screenshot or validate secrets by guessing.
+
+Files changed: `.env.example`, `pyproject.toml`; `src/ytintel/{api,app,browser_policy,config,errors,http_boundary,http_gate,mcp_server,providers/google,quota,service,store,tenant_quota,ui,ui_theme}.py`; `scripts/{browser_smoke.cjs,check_google.py}`; `tests/{browser_server,test_api,test_client_compatibility,test_google_quota_only,test_http_gate,test_infrastructure,test_mcp,test_mixed_mcp,test_postgres,test_scripts,test_setup,test_simple_browser,test_tenancy,test_ui,test_workflows}.py`; README, requirements interpretation, security, testing, architecture, Render deployment, observability plan, new UPGRADE_2_4_0.md and this report. Existing quota-enforcement assertions were deliberately replaced with no-enforcement plus accounting/isolation assertions. No security test was removed to obtain green results.
+
+Final verification:265 passed,10 PostgreSQL tests skipped,91.99% coverage; Ruff check/format pass74 files; installed2.4.0 wheel matches all source modules; real HTTP health/HEAD/version/OAuth discovery/Claude-origin no-redirect tools list pass. Chromium actual native-dialog, cancellation, CSRF/wrong phrase, complete/replay, partial/resume, uncertain/no-retry, mobile, OAuth cross-origin callback/token and Google-consent fixture checks pass without CSP/JS errors. Independent scoped security review findings (dropped MCP details and stale write UI) were corrected with failing regressions and rechecked with no remaining finding.
+
+No real Google/YouTube account writes, fresh Neon connection, live Claude account or Render deployment were performed. The supplied log provides prior PostgreSQL/startup evidence, not a new live credential test. All automated upstream tests are synthetic, PostgreSQL optional tests require TEST_DATABASE_URL, native Windows not run here. Credentials, configured .env and production data are absent from the archive. Retain the existing encryption key; no migration is needed. Google quotas and free hosting availability remain external; no local fairness guarantee exists after the explicit enforcement removal.

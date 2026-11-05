@@ -1,3 +1,5 @@
+Version 2.4.0: see [current reconnect and browser-dialog steps](UPGRADE_2_4_0.md). Earlier version-specific UI notes below are historical.
+
 # Deploy on Render + Neon and connect Claude
 
 Deploy source from a private GitHub repository, use Neon for persistence, and enter secrets manually in Render Environment. The handoff contains only `.env.example`; never upload an existing `.env`, database or configured ZIP. No persistent Render disk is needed.
@@ -8,7 +10,7 @@ Push the Dockerfile, lockfile, project metadata, source, scripts and deployment 
 
 Create/use a Google OAuth **Web application** client and enable YouTube Data API v3. Configure the external consent screen and test users. Initial consent requests `openid`, `https://www.googleapis.com/auth/youtube.readonly` and `https://www.googleapis.com/auth/youtube`. Google grants are checked; declined or legacy read-only grants have explicit write-permission recovery. Each end user supplies their own consent; the operator never connects an account for everyone.
 
-Testing mode is limited to 100 test users and refresh tokens for this scope flow may expire after seven days. Production distribution requires applicable Google verification/review. Check actual project quota settings: the application defaults to 10,000 general units/day and a separate 100 `search.list` calls/day ceiling; these are local caps, not guaranteed upstream availability.
+Testing mode is limited to 100 test users and refresh tokens for this scope flow may expire after seven days. Production distribution requires applicable Google verification/review. Google alone enforces project quotas. The application imposes no quota budgets, search caps or request-rate limits.
 
 ## 2. Configure Render
 
@@ -27,12 +29,11 @@ Create a Docker web service from the private repository. Root Directory is the d
 | `YT_REDIRECT_URI` | Omit to derive, or exact canonical origin + `/oauth/callback` |
 | `YT_LOCAL_BASE_URL` | Local development origin only; defaults to `http://localhost:8000`, set for a custom port |
 | `YT_TRUSTED_PROXIES` | Comma-separated trusted ingress IPs/CIDRs; default empty, never `*` |
-| `YT_USER_UNITS_PER_DAY` | Per-user daily general units; default `1000` |
 | `YT_ANONYMOUS_UNITS_PER_DAY` | Anonymous global pool; omitted defaults dynamically to 30% of project units |
 
-Use `.env.example` for the complete current setting names and defaults, including tenant/anonymous budgets and rate limits. Preserve Neon TLS parameters, including `sslmode=require` and supplied channel binding. A configured database outage fails closed rather than switching to an ephemeral local database. Keep the encryption key out of Git; changing it without migration makes stored records unreadable.
+Use `.env.example` for the complete current setting names and defaults, without app quota/rate settings; legacy quota/rate variables are ignored. Preserve Neon TLS parameters, including `sslmode=require` and supplied channel binding. A configured database outage fails closed rather than switching to an ephemeral local database. Keep the encryption key out of Git; changing it without migration makes stored records unreadable.
 
-Render supplies `RENDER_EXTERNAL_URL`. Remove stale localhost/different-host callback overrides from Render only. Choose one canonical HTTPS origin and use it for browser sessions, MCP discovery and callback registration. Configure trusted proxy addresses for the deployed ingress explicitly; trusting arbitrary forwarded IPs defeats IP quotas. Do not enable wildcard CORS or set a wildcard proxy trust as a shortcut.
+Render supplies `RENDER_EXTERNAL_URL`. Remove stale localhost/different-host callback overrides from Render only. Choose one canonical HTTPS origin and use it for browser sessions, MCP discovery and callback registration. Configure trusted proxy addresses for the deployed ingress explicitly; do not trust arbitrary forwarded identity headers. Do not enable wildcard CORS or set a wildcard proxy trust as a shortcut.
 
 Do not configure legacy `YT_API_KEY`, `YT_OWNER_KEY` or `YT_MCP_URL_KEY` as a client authorization mechanism. They do not replace per-user OAuth. Redeploy after setting secrets. Run the idempotent migration once with the configured production environment:
 
@@ -92,7 +93,7 @@ Render free instances may sleep and cold-start, and Neon free plans have resourc
 | Database unavailable | Check Neon connectivity/TLS and secrets; no silent SQLite fallback is expected |
 | Connector timeout after idle | Wake the hosted root page, then reconnect; inspect deployment health if it persists |
 
-Run one application process/worker per deployment. The launcher explicitly uses one worker; in-process request rate windows require one instance (daily quota and token rotation are database-atomic). Add a distributed rate limiter before horizontal scaling.
+Run one application process/worker per deployment. The launcher explicitly uses one worker, and credential/workflow locks are process-local. Quota/rate enforcement is entirely Google-side.
 
 For the 2.1.0 scope/optional-duration upgrade and existing-account reconnection steps, see UPGRADE_2_1_0.md.
 

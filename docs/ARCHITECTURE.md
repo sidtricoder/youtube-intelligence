@@ -9,7 +9,7 @@ The application is a modular monolith. Pure immutable domain algorithms depend o
 | `context.py` | Immutable anonymous/user request contexts |
 | `identity.py`, `credentials.py` | Google OIDC verification and subject-bound credential access/refresh |
 | `tenancy.py`, `store.py` | Encrypted public/tenant persistence, ownership and atomic transitions |
-| `quota.py`, `tenant_quota.py` | Project, anonymous/IP and individual transactional reservations |
+| `quota.py`, `tenant_quota.py` | Informational project/anonymous/account usage counters; no enforcement |
 | `security/protocols.py`, clock port in `security/store.py` | Narrow security ports and injectable time |
 | `security/store.py`, `security/oauth.py` | Encrypted OAuth clients/grants/tokens and official SDK provider implementation |
 | `policy.py`, `http_gate.py`, `http_boundary.py` | Explicit public allowlist and JSON-RPC-aware mixed-auth HTTP gate |
@@ -43,9 +43,9 @@ Constraints include topic 2–200 characters and optional positive integer durat
 
 ## Persistence and quota
 
-Neon pooled PostgreSQL is preferred. This release runs one instance and one worker; database quota/rotation operations remain atomic, but in-process request rate windows are not a distributed limiter. Tenant ownership is part of personal record predicates, not just an encrypted payload field. Public metadata caches never contain a personal profile. Configured database failures fail closed without SQLite fallback. Explicit local SQLite remains a development option. `python -m ytintel.migrate --database-url-env DATABASE_URL_POOLED` (or explicit `--sqlite /path/to/local.db`) runs the same idempotent version-1 table initialization as startup. Existing single-owner records are ignored and never assigned to a signed-in user.
+Neon pooled PostgreSQL is preferred. This release runs one instance and one worker; usage accounting and token rotation remain database-atomic; workflow locks remain process-local. Tenant ownership is part of personal record predicates, not just an encrypted payload field. Public metadata caches never contain a personal profile. Configured database failures fail closed without SQLite fallback. Explicit local SQLite remains a development option. `python -m ytintel.migrate --database-url-env DATABASE_URL_POOLED` (or explicit `--sqlite /path/to/local.db`) runs the same idempotent version-1 table initialization as startup. Existing single-owner records are ignored and never assigned to a signed-in user.
 
-Short transactions, schema-scoped transaction advisory locks and atomic reservations support Neon transaction pooling. Quotas check project units and searches, anonymous pool/IP, and signed-in-user allocation before the workflow starts. Attempted calls consume quota; unused reservation is refunded. The ledger cannot observe external project consumers.
+Short transactions, schema-scoped transaction advisory locks and atomic reservations support Neon transaction pooling. Google enforces all quotas and rate limits. Attempted calls update informational counters; unused accounting reservations are refunded. Counters, old budget settings and reservation estimates never reject a call. The ledger cannot observe external project consumers.
 
 REST browser actions include the root shell, `/oauth/callback`, user sign-in/write-consent entry points, user-owned draft read/approve/resume and disconnect. `/health` is liveness. Consult the generated OpenAPI `/docs` for the exact current REST schemas rather than reusing legacy API/owner keys. The MCP endpoint is `/mcp/`; tokens go through the OAuth client flow, never the URL.
 
@@ -69,3 +69,5 @@ support beyond this authorization compatibility: MCP wire negotiation uses the p
 ## Request diagnostics
 
 `observability.py` owns stdout event formatting, allow-listed fields, safe validation guidance and the outer ASGI correlation boundary. `mcp_observer.py` extends the SDK dispatch method to observe validation before tool execution and sanitize unexpected tool failures. Transport code contains no playlist decision logic. Domain/service/provider/auth layers emit aggregate stage events without credentials or personal metadata. The request context ID flows through ContextVar and is never accepted from a client header.
+
+Version 2.4.0 replaces the prior custom/native-HTML dialog styling with plain browser-owned confirm/prompt/alert boxes. Browser fetch uses own-session CSRF and reports status without navigation; AI tools handle discovery/drafts/status and cannot approve writes. See UPGRADE_2_4_0.md for the explicit quota requirement override and Claude compatibility tests.

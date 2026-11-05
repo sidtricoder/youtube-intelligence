@@ -26,15 +26,15 @@ def test_encrypted_storage_expiry_and_single_use(store):
     assert store.get("old") is None
 
 
-def test_quota_reserves_before_any_call_and_refunds_unused(store):
-    q = Quota(store, units=10, searches=2)
+def test_usage_meter_never_enforces_old_limits_and_refunds_unused(store):
+    q = Quota(store, units=0, searches=0)
     with q.reserve(8, 1) as ticket:
-        ticket.consume(3, 1)
-        with pytest.raises(AppError, match="quota"):
-            with q.reserve(3, 0):
-                pass
-    assert q.status()["units_used"] == 3
-    assert q.status()["searches_used"] == 1
+        ticket.consume(30, 10)
+        with q.reserve(3, 0) as nested:
+            nested.consume(3)
+    assert q.status()["units_used"] == 33
+    assert q.status()["searches_used"] == 10
+    assert q.status()["units_limit"] is None and q.status()["enforcement"] == "google"
 
 
 @pytest.mark.parametrize(
@@ -270,7 +270,7 @@ def test_atomic_transition_and_quota_concurrency(store):
 
     with ThreadPoolExecutor(2) as pool:
         results = list(pool.map(run, range(2)))
-    assert sum(results) == 1
+    assert sum(results) == 2
 
 
 async def test_reauthorization_does_not_mix_account_tokens_cache_or_drafts(store):
@@ -372,8 +372,8 @@ def test_quota_day_reset_is_separate_and_zero_charge_on_reservation_failure(stor
     q.day = lambda: "2026-11-01"
     with q.reserve(1, 1) as ticket:
         ticket.consume(1, 1)
-    with pytest.raises(AppError):
-        with q.reserve(1, 0):
-            pass
+    with q.reserve(1, 0) as ticket:
+        ticket.consume(1)
+    assert q.status()["units_used"] == 2
     q.day = lambda: "2026-11-02"
     assert q.status()["units_used"] == 0

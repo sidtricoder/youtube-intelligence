@@ -37,11 +37,6 @@ def install_api_routes(app, *, auth, issuer, s, credentials, context_factory, se
         ip = client_address(
             request.scope, tuple(x.strip() for x in s.trusted_proxies.split(",") if x.strip())
         )
-        identity = ("user", token.user_id) if token else ("ip", ip)
-        if not rest_windows.allow_rate(
-            identity, s.user_rate_limit if token else s.anonymous_rate_limit
-        ):
-            raise AppError("rate_limited", "Sign in or retry later", 429)
         if token:
             await credentials.access(token.user_id)
         return service_factory(await context_factory(token, ip))

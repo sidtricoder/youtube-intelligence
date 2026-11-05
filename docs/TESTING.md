@@ -10,12 +10,12 @@ Ordinary tests run offline with synthetic identities, metadata and credentials. 
 | FR4 engagement | domain dates/statistics, user service/provider | sample/UTC/period cases, subject isolation, protected real TCP |
 | FR5 playlist | public preview, protected draft, tenant store, browser approval | constraints, ownership/CSRF, atomic claim/replay, partial/uncertain writes |
 | Video-to-playlist skill | packaged skill, prompt/resource, workflow | metadata-only summary, stateless public preview, own-session approval |
-| TQ1 unit | domain, security policy/clock/store, quotas | deterministic validation, expiry, scope/audience, reservations |
+| TQ1 unit | domain, security policy/clock/store, quotas | deterministic validation, expiry, scope/audience, informational usage counters |
 | TQ2 integration | Google adapter, identity/refresh, encrypted storage | response/pagination/write shapes, signature/nonce, wrong-sub refresh rejection |
 | TQ3 MCP system | real TCP + uvicorn + official SDK client | `tests/test_mixed_mcp.py`: public/protected tools, metadata/challenge, registration/token flow |
 | TQ4 negative | domain/provider, security HTTP gate/browser | invalid input/token, cross-user IDs, insufficient scope, revocation, redirect/CSRF/injection |
 | TQ5 isolated live | opt-in read-only smoke | no ordinary CI Google access; minimal calls; no credentials/personal artifacts |
-| TQ6 quota | project + tenant/anonymous quota ledger | preflight no-call rejection, attempted calls, refunds, rollover, concurrency/IP/search cap |
+| TQ6 latest override | Google-only enforcement and account-scoped metering | zero legacy budgets/rate caps do not block; real provider rejection and safe reason reach MCP; counts/refunds/concurrency remain isolated |
 
 ## Offline verification
 
@@ -51,3 +51,5 @@ For opt-in PostgreSQL tests, supply `TEST_DATABASE_URL` for a dedicated test end
 For an external Google app in Testing, plan around the 100-test-user limit and seven-day refresh-token expiry for this non-basic YouTube scope flow. Reauthorization is expected when a Testing grant expires. Moving to production requires the applicable Google verification/review and consent-screen configuration; offline tests or a working authorization URL do not prove approval. Verify current project quotas and production status in Google Cloud before wider use.
 
 Opt-in live smoke should use a separately consented read-only test account and secret environment, perform a minimal documented budget (for example one `videos.list`, no searches/writes), and never upload personal payloads. Actual live sign-in and writes must be reported only after an end user observes them. Render cold starts, Neon availability and third-party client behavior require deployment acceptance in addition to local tests.
+
+Current browser smoke verifies actual window.confirm/prompt/alert boxes, cancel/no-write, CSRF, wrong phrase rejection, complete/replay, partial explicit RESUME, uncertain no-retry and same-origin fetch without page navigation. test_client_compatibility.py exercises real HTTP post-OAuth initialize/list with Claude Origin, strict untrusted-Origin rejection and the no-redirect /mcp alias. Quota tests that formerly asserted custom rejection were deliberately rewritten to assert the user’s explicit Google-only enforcement override, retaining isolation/accounting/concurrency assertions.

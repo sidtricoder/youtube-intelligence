@@ -1,4 +1,4 @@
-"""Bounded live public integration checks; uses configured Google API, never writes playlists."""
+"""Minimal opt-in live public checks; Google enforces quota, no playlist writes."""
 
 import argparse
 import asyncio
@@ -19,8 +19,7 @@ async def check(output: Path):
         "callback": configured.redirect_uri,
         "checks": [],
         "live_writes": 0,
-        "general_budget": 10,
-        "search_budget": 3,
+        "quota_enforcement": "google",
     }
     with tempfile.TemporaryDirectory() as directory:
         settings = configured.model_copy(
@@ -28,9 +27,6 @@ async def check(output: Path):
                 "db_path": str(Path(directory) / "live.db"),
                 "database_url": None,
                 "database_url_pooled": None,
-                "units_per_day": 10,
-                "searches_per_day": 3,
-                "anonymous_units_per_day": 10,
             }
         )
         app = create_app(settings)

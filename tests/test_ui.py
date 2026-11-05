@@ -5,13 +5,13 @@ from sqlalchemy import func, select
 from tests.wire_helpers import csrf, login, query, running_server
 
 
-def test_consent_is_an_accessible_dialog_with_nonce_and_escaped_client_name():
+def test_consent_uses_native_confirm_with_nonce_and_escaped_client_name():
     from ytintel.ui import consent_page
 
     response = consent_page("<script>bad()</script>", "https://claude.ai/callback", "csrf", "tx")
     body = response.body.decode()
-    assert "<dialog" in body and 'aria-labelledby="consent-title"' in body
-    assert ".showModal()" in body and 'name="decision" value="deny"' in body
+    assert "window.confirm(" in body and 'id="consent-title"' in body
+    assert 'name="decision" value="deny"' in body
     assert "&lt;script&gt;bad()&lt;/script&gt;" in body
     assert "script-src 'nonce-" in response.headers["content-security-policy"]
     assert "form-action 'self' https://claude.ai" in response.headers["content-security-policy"]
