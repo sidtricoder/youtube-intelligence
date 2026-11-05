@@ -57,7 +57,7 @@ ACLs. The functional bootstrap, Fernet and exclusive-create checks run on both C
 
 ## Browser presentation (current 2.4.0)
 
-Consent uses browser-owned window.confirm; playlist confirmation uses window.prompt only after a user gesture. The same own-session/CSRF/account checks and typed CREATE/RESUME phrase remain. Fetch reports results through a browser alert without page navigation. Script data is JSON-encoded with HTML-sensitive characters escaped, execution requires a fresh CSP nonce and fetch is restricted to self. No unsafe-inline JavaScript or arbitrary form/fetch destinations are enabled. Plain forms remain the no-JavaScript fallback.
+Consent uses browser-owned window.confirm; playlist confirmation uses a simple confirm button (with optional window.confirm) after a user gesture. The same own-session/CSRF/account checks remain. Fetch reports results without page navigation. Script data is JSON-encoded with HTML-sensitive characters escaped, execution requires a fresh CSP nonce and fetch is restricted to self. No unsafe-inline JavaScript or arbitrary form/fetch destinations are enabled. Plain forms remain the no-JavaScript fallback. AI clients can also confirm via the confirm_playlist_draft tool after user agreement in the conversation.
 
 ## Operational diagnostics (2.3.0)
 

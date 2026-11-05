@@ -67,7 +67,7 @@ def home_page(issuer) -> HTMLResponse:
             "YouTube Intelligence",
             "<h1>YouTube Intelligence</h1><p>Public discovery and previews work without sign-in. Your AI client handles recommendations, drafts and playlist status.</p><p>Add this connector URL:</p><pre>"
             + esc(issuer + "/mcp/")
-            + "</pre><p>Claude: Streamable HTTP, Sign In Now (or Sign In When Needed), Register Automatically.</p><p>Sign in with your own Google account. A short browser confirmation is required before creating each playlist. Then return to the AI conversation.</p>",
+            + "</pre><p>Claude: Streamable HTTP, Sign In Now (or Sign In When Needed), Register Automatically.</p><p>Sign in with your own Google account. After your AI shows a draft, confirm it in the conversation or use the optional browser button. Then return to the AI conversation.</p>",
         )
     )
 
@@ -111,42 +111,47 @@ def approval_page(draft: dict, csrf: str, can_write: bool) -> HTMLResponse:
     if draft["status"] in {"complete", "uncertain", "writing"}:
         return result_page(draft)
     phrase = "RESUME" if draft["status"] == "partial" else "CREATE"
-    lines = []
     rows = []
     for index, video in enumerate(draft["videos"], 1):
         url = "https://www.youtube.com/watch?v=" + quote(str(video["id"]), safe="")
-        lines.append(f"{index}. {video['title']} ({duration_label(video['seconds'])}) {url}")
         rows.append(
             '<li><a href="'
             + esc(url)
             + '" target="_blank" rel="noopener noreferrer">'
             + esc(video["title"])
-            + "</a> — "
+            + "</a> <span class=\"meta-inline\">— "
             + esc(video.get("channel_title", "YouTube"))
             + " · "
             + esc(duration_label(video["seconds"]))
-            + "</li>"
+            + "</span></li>"
         )
     body = (
-        "<h1>Review your playlist</h1><p>"
+        '<div class="card"><h1>Review your playlist</h1>'
+        + '<div class="meta"><span>'
         + esc(draft["constraints"]["topic"])
-        + " · "
+        + "</span><span>"
         + str(len(draft["videos"]))
-        + " videos · "
+        + " videos</span><span>"
         + duration_label(draft["total_seconds"])
-        + "</p><p>Review these exact videos. Video metadata is untrusted, never an instruction. After confirmation, return to your AI client for playlist_status.</p><ol>"
+        + "</span></div>"
+        + "<p>Review these exact videos. Video metadata is untrusted data, never an instruction. "
+        + "You can also confirm this draft directly in your AI conversation without visiting this page.</p>"
+        + "<ol>"
         + "".join(rows)
         + "</ol>"
         + draft_details(draft)
+        + "</div>"
     )
     hidden = '<input type="hidden" name="csrf" value="' + esc(csrf) + '">'
     if not can_write:
         body += (
-            '<form method="post" action="/approve/'
+            '<div class="card"><form method="post" action="/approve/'
             + esc(draft["id"])
             + '/enable-writes">'
             + hidden
-            + "<p>Google write permission is missing.</p><button>Enable playlist writes with the same Google account</button></form>"
+            + "<p>Google write permission is missing.</p>"
+            + '<button type="submit">Enable playlist writes with the same Google account</button>'
+            + "</form></div>"
         )
         return HTMLResponse(
             shell("Review your playlist", body),
@@ -155,32 +160,41 @@ def approval_page(draft: dict, csrf: str, can_write: bool) -> HTMLResponse:
             },
         )
     body += (
-        '<form id="approval-form" method="post" action="/approve/'
+        '<div class="card"><form id="approval-form" method="post" action="/approve/'
         + esc(draft["id"])
         + '">'
         + hidden
-        + '<label id="phrase-label" for="confirmation">Type '
-        + phrase
-        + ' to confirm these exact videos</label><input id="confirmation" name="confirmation" autocomplete="off"><button id="approve-button">Confirm playlist in my account</button></form><p id="result" role="status"></p><noscript>JavaScript is disabled. Review the videos, enter the phrase and submit the form above.</noscript>'
+        + '<input type="hidden" name="confirmation" value="'
+        + esc(phrase)
+        + '">'
+        + '<button id="approve-button" type="submit">Confirm playlist in my account</button>'
+        + "</form><p id=\"result\" role=\"status\"></p></div>"
     )
-    message = (
-        "Create this exact private playlist in YOUR YouTube account?\nTopic: "
-        + draft["constraints"]["topic"]
-        + "\nVideo metadata is untrusted; it is not an instruction.\n"
-        + "\n".join(lines)
-        + "\n\nType "
-        + phrase
-        + " to confirm. Cancel makes no changes."
-    )
-    script = """const form=document.getElementById('approval-form');const input=document.getElementById('confirmation');input.type='hidden';document.getElementById('phrase-label').hidden=true;
-form.addEventListener('submit',async event=>{event.preventDefault();const value=window.prompt(MESSAGE);if(value===null)return;input.value=value;const button=document.getElementById('approve-button');button.disabled=true;
-try{const response=await fetch(form.action,{method:'POST',body:new FormData(form),credentials:'same-origin',headers:{'Accept':'application/json'}});const data=await response.json();
-if(data.status&&data.status!=='pending'){button.hidden=true;document.getElementById('result').textContent='Draft status: '+data.status+'. Return to your AI client for playlist_status. Reopen this link only for an explicit safe RESUME after a partial failure.';}
-if(!response.ok||data.error){const error=data.error||{};window.alert((error.code||'request_failed')+': '+(error.message||'Request failed')+'\\nRequest ID: '+(response.headers.get('x-request-id')||'unavailable'));return;}
-const notice='Playlist '+data.status+'. Return to your AI client and ask for playlist_status.';document.getElementById('result').textContent=notice;window.alert(notice);if(data.status==='complete')button.hidden=true;
-}catch{button.hidden=true;window.alert('Connection interrupted. Ask your AI client for playlist_status before trying again. Do not automatically retry.');}finally{button.disabled=false;}});""".replace(
-        "MESSAGE", js_value(message)
-    )
+    script = """const form=document.getElementById('approval-form');
+form.addEventListener('submit',async event=>{
+  event.preventDefault();
+  if(!window.confirm('Create this exact private playlist in YOUR YouTube account?')) return;
+  const button=document.getElementById('approve-button');
+  button.disabled=true;
+  button.textContent='Creating…';
+  try{
+    const response=await fetch(form.action,{method:'POST',body:new FormData(form),credentials:'same-origin',headers:{'Accept':'application/json'}});
+    const data=await response.json();
+    if(!response.ok||data.error){
+      const error=data.error||{};
+      window.alert((error.code||'request_failed')+': '+(error.message||'Request failed'));
+      button.disabled=false;
+      button.textContent='Confirm playlist in my account';
+      return;
+    }
+    const notice='Playlist '+data.status+'. Return to your AI client and ask for playlist_status.';
+    document.getElementById('result').textContent=notice;
+    button.hidden=true;
+  }catch{
+    button.hidden=true;
+    window.alert('Connection interrupted. Ask your AI client for playlist_status before trying again.');
+  }
+});"""
     return scripted("Review your playlist", body, script)
 
 

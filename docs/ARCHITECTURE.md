@@ -17,7 +17,7 @@ The application is a modular monolith. Pure immutable domain algorithms depend o
 | `mcp_server.py` | SDK tools/resources/prompts bound to request context |
 | `app.py` | FastAPI composition and lifespan |
 | `api.py`, `web.py`, `oauth_routes.py` | User-scoped API, browser review/approval, and OAuth/session routes |
-| `web.py` | User's own browser review and explicit confirmation |
+| `web.py` | User's own browser review and optional button confirmation |
 
 Security modules keep provider/storage/policy/transport concerns separate. Some compatibility names may remain at these boundaries; responsibility and request identity must remain explicit. A new provider implements the read/write protocol without changing ranking. Test fixtures are injected only in tests, never selected as a production demo provider.
 
@@ -37,7 +37,7 @@ Recommendations derive bounded seeds from the caller's likes, playlists and subs
 
 ## Draft state and failures
 
-A protected draft stores exact ordered video IDs, metadata snapshot, constraints, expiry, owner subject and progress. No endpoint mutates its content. Browser approval validates that same subject and exact draft. Persistent credential generations invalidate stale read/write/refresh operations after disconnect or a newer login, so an in-flight response cannot resurrect an old grant. `pending → writing → complete` uses atomic claims. Before an external write, progress is persisted as uncertain; a successful response records the playlist/inserted item. A known rejection may become partial and permit explicit browser resume with `RESUME` confirmation. Ambiguous failures remain uncertain. Remote exactly-once delivery cannot be guaranteed without Google idempotency support.
+A protected draft stores exact ordered video IDs, metadata snapshot, constraints, expiry, owner subject and progress. No endpoint mutates its content. Confirmation (via AI tool after user agreement or optional browser button) validates that same subject and exact draft. Persistent credential generations invalidate stale read/write/refresh operations after disconnect or a newer login, so an in-flight response cannot resurrect an old grant. `pending → writing → complete` uses atomic claims. Before an external write, progress is persisted as uncertain; a successful response records the playlist/inserted item. A known rejection may become partial and permit explicit resume. Ambiguous failures remain uncertain. Remote exactly-once delivery cannot be guaranteed without Google idempotency support.
 
 Constraints include topic 2–200 characters and optional positive integer duration values. There is no fixed server minimum/maximum total or per-video duration; omitted/null duration values are unbounded. Optional language requires exact declared metadata; unknown language is excluded. Duration-zero/unavailable/live candidates are excluded, duplicates collapse, and total runtime never exceeds its ceiling. The algorithm may leave unused runtime rather than relax constraints.
 
@@ -70,4 +70,4 @@ support beyond this authorization compatibility: MCP wire negotiation uses the p
 
 `observability.py` owns stdout event formatting, allow-listed fields, safe validation guidance and the outer ASGI correlation boundary. `mcp_observer.py` extends the SDK dispatch method to observe validation before tool execution and sanitize unexpected tool failures. Transport code contains no playlist decision logic. Domain/service/provider/auth layers emit aggregate stage events without credentials or personal metadata. The request context ID flows through ContextVar and is never accepted from a client header.
 
-Version 2.4.0 replaces the prior custom/native-HTML dialog styling with plain browser-owned confirm/prompt/alert boxes. Browser fetch uses own-session CSRF and reports status without navigation; AI tools handle discovery/drafts/status and cannot approve writes. See UPGRADE_2_4_0.md for the explicit quota requirement override and Claude compatibility tests.
+Version 2.5.0 adds AI-mediated confirmation via confirm_playlist_draft after user agreement in the conversation, modernizes the optional browser fallback to a simple button, and keeps quota enforcement with Google. AI tools can now confirm drafts. See prior upgrade notes for quota and Claude compatibility.

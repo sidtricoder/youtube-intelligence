@@ -170,7 +170,7 @@ async def test_two_accounts_interleaved_fr1_to_fr5_and_browser_confirmation(serv
                 # Both users granted writes during initial setup: no second Google consent.
                 assert "enable-writes" not in page.text
                 assert (await browser.post(path + "/enable-writes", data={})).status_code == 403
-                assert "Type CREATE" in page.text
+                assert "Confirm playlist in my account" in page.text
                 for form in (
                     {"confirmation": "CREATE"},
                     {"csrf": csrf(page), "confirmation": "yes"},

@@ -18,6 +18,7 @@ TOOL_TIERS = {
     "recommendations": Tier.AUTHENTICATED,
     "engagement_analysis": Tier.AUTHENTICATED,
     "create_playlist_draft": Tier.AUTHENTICATED,
+    "confirm_playlist_draft": Tier.AUTHENTICATED,
     "playlist_status": Tier.AUTHENTICATED,
     "disconnect": Tier.AUTHENTICATED,
 }

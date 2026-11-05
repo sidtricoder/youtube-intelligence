@@ -1,4 +1,5 @@
 import json
+import time
 
 import httpx
 import pytest
@@ -79,6 +80,7 @@ async def test_http_logs_never_include_query_secrets_headers_or_dynamic_paths(tm
                         "X-Request-ID": "private-injected",
                     },
                 )
+            time.sleep(0.05)  # allow server thread to flush the completed event
         text = json.dumps(events(caplog))
         assert "http.completed" in text
         for secret in [

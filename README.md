@@ -2,7 +2,7 @@
 
 Discover related YouTube videos and channels publicly, then sign in with your own Google account for recommendations, engagement analysis and reviewed private playlists. The production provider uses the official YouTube Data API v3. Summaries use title/description metadata, not transcripts or claims of watching a video.
 
-Version 2.4.0 uses native browser confirmation boxes, fixes Claude-origin and MCP URL compatibility, and leaves quota/rate enforcement entirely to Google. Follow [the 2.4.0 upgrade and reconnect steps](docs/UPGRADE_2_4_0.md).
+Version 2.5.0 adds AI-mediated confirmation (confirm_playlist_draft after user agreement in chat), modern button-based browser fallback, and leaves quota/rate enforcement entirely to Google. Follow [the 2.4.0 upgrade and reconnect steps](docs/UPGRADE_2_4_0.md) then update your client.
 
 Start with [Render + Neon deployment](docs/DEPLOY_RENDER.md). The hosted MCP URL is **`https://<host>/mcp/`**. In Claude choose **Streamable HTTP**, **Sign In Now** and **Register Automatically**. Use the plain URL with its trailing slash; no static bearer key, query key or custom header is needed. Choose Sign In Now to grant permissions during setup. Public tools still support anonymous access; Sign In When Needed defers this same sign-in until protected work.
 
@@ -13,8 +13,8 @@ The handoff contains `.env.example`, never a configured `.env`. Keep secrets in 
 1. Ask for videos similar to a YouTube URL or channels similar to an `@handle`. Public results use public metadata and are not personalized.
 2. Ask for a constrained playlist preview, specifying topic and any optional duration/language preferences. Omit durations for no duration bound; the AI can choose bounds when appropriate. Public previews are stateless.
 3. For recommendations or account analysis, sign in with Google during connector setup (or when first prompted by a client using lazy sign-in). Initial Google consent requests OpenID identity plus YouTube read and write access.
-4. To save a playlist, create a signed-in draft, open its short confirmation link in your own browser session and review the ordered videos. Initial sign-in requests playlist-write permission. Type CREATE in the native browser prompt to approve that exact draft; recovery consent is needed only if the write grant was declined or is missing.
-5. Read `playlist_status` after approval. A known partial failure can be explicitly resumed in the browser; an uncertain outcome requires manual inspection of YouTube and never auto-retries.
+4. To save a playlist, create a signed-in draft. Your AI shows the exact ordered videos in the conversation. After you agree, the AI calls confirm_playlist_draft. An optional modern browser page with a confirm button is also available. Initial sign-in requests playlist-write permission.
+5. Read `playlist_status` after approval. A known partial failure can be explicitly resumed; an uncertain outcome requires manual inspection of YouTube and never auto-retries.
 
 Each Google subject has separate tokens, refreshes, profile caches, drafts, quota and approvals. Another user's connection or disconnect does not select your account or authorize your writes. The operator does not provide a shared Google account.
 
