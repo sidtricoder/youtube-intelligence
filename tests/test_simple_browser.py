@@ -30,7 +30,9 @@ def test_consent_uses_browser_confirm_and_no_custom_dialog():
 def test_approval_uses_button_and_fetch_not_navigation():
     response = approval_page(draft(), "csrf", True)
     body = response.body.decode()
-    assert "window.confirm(" in body and "fetch(" in body and "Confirm playlist in my account" in body
+    assert (
+        "window.confirm(" in body and "fetch(" in body and "Confirm playlist in my account" in body
+    )
     assert "window.prompt(" not in body
     assert "<script>bad()</script>" not in body
     assert "connect-src" in response.headers["content-security-policy"]

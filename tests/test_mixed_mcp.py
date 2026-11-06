@@ -335,7 +335,9 @@ async def test_initial_connection_requests_write_permission_and_long_draft_needs
             assert draft["total_seconds"] > 14400
             assert draft["constraints"]["total_seconds"] is None
             page = await browser.get("/approve/" + draft["id"])
-            assert "Confirm playlist in my account" in page.text and "enable-writes" not in page.text
+            assert (
+                "Confirm playlist in my account" in page.text and "enable-writes" not in page.text
+            )
             assert provider.created == []
             from tests.wire_helpers import csrf
 

@@ -119,7 +119,7 @@ def approval_page(draft: dict, csrf: str, can_write: bool) -> HTMLResponse:
             + esc(url)
             + '" target="_blank" rel="noopener noreferrer">'
             + esc(video["title"])
-            + "</a> <span class=\"meta-inline\">— "
+            + '</a> <span class="meta-inline">— '
             + esc(video.get("channel_title", "YouTube"))
             + " · "
             + esc(duration_label(video["seconds"]))
@@ -168,7 +168,7 @@ def approval_page(draft: dict, csrf: str, can_write: bool) -> HTMLResponse:
         + esc(phrase)
         + '">'
         + '<button id="approve-button" type="submit">Confirm playlist in my account</button>'
-        + "</form><p id=\"result\" role=\"status\"></p></div>"
+        + '</form><p id="result" role="status"></p></div>'
     )
     script = """const form=document.getElementById('approval-form');
 form.addEventListener('submit',async event=>{
