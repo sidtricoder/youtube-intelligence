@@ -12,6 +12,7 @@ dist/
 build/
 node_modules/
 test-results/
+*.zip/
 
 # Private Google credentials and transient setup files
 .env.*

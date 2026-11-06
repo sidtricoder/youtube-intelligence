@@ -182,9 +182,17 @@ form.addEventListener('submit',async event=>{
     const data=await response.json();
     if(!response.ok||data.error){
       const error=data.error||{};
-      window.alert((error.code||'request_failed')+': '+(error.message||'Request failed'));
-      button.disabled=false;
-      button.textContent='Confirm playlist in my account';
+      const code=error.code||'request_failed';
+      const message=code+': '+(error.message||'Request failed');
+      if(code==='confirmation_required'){
+        window.alert(message);
+        button.disabled=false;
+        button.textContent='Confirm playlist in my account';
+        return;
+      }
+      // The write may have started: never leave a stale confirmation button active.
+      button.hidden=true;
+      window.alert(message+'. Reload this page or ask your AI client for playlist_status before trying again.');
       return;
     }
     const notice='Playlist '+data.status+'. Return to your AI client and ask for playlist_status.';

@@ -63,6 +63,12 @@ async def test_gate_challenge_is_logged_and_response_has_server_request_id(tmp_p
         assert response.status_code == 401
         assert response.headers["x-request-id"]
         assert any(e.get("event") == "auth.challenge" for e in events(caplog))
+        # http.completed is logged after the response is sent, so it can land just after the client returns.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not any(
+            e.get("event") == "http.completed" and e.get("status") == 401 for e in events(caplog)
+        ):
+            time.sleep(0.01)
         assert any(
             e.get("event") == "http.completed" and e.get("status") == 401 for e in events(caplog)
         )
