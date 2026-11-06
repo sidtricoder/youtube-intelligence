@@ -1,0 +1,77 @@
+{
+  "project_id": "dark-smile",
+  "callback": "http://localhost:8000/oauth/callback",
+  "checks": [
+    {
+      "name": "Official videos.list with supplied API key",
+      "status": "PASS",
+      "details": {
+        "videos_returned": 1
+      }
+    },
+    {
+      "name": "FR1 live similar videos",
+      "status": "PASS",
+      "details": {
+        "ranked_candidates": 10
+      }
+    },
+    {
+      "name": "FR2 live similar channels",
+      "status": "PASS",
+      "details": {
+        "ranked_candidates": 10
+      }
+    },
+    {
+      "name": "FR5 live constrained playlist preview (no write)",
+      "status": "PASS",
+      "details": {
+        "preview_videos": 24,
+        "total_seconds": 3506,
+        "status": "pending"
+      }
+    },
+    {
+      "name": "OAuth client configuration and fixed callback",
+      "status": "PASS",
+      "details": {
+        "redirect_uri": "http://localhost:8000/oauth/callback",
+        "pkce": "S256"
+      }
+    },
+    {
+      "name": "Personal data OAuth guard (no fallback)",
+      "status": "PASS",
+      "details": {
+        "unauthorized_personal_access": "blocked as required"
+      }
+    }
+  ],
+  "live_writes": 0,
+  "general_budget": 10,
+  "search_budget": 3,
+  "quota": {
+    "day": "2026-11-02",
+    "units_used": 5,
+    "searches_used": 3,
+    "units_limit": 10,
+    "searches_limit": 3
+  },
+  "blocked_checks": [
+    {
+      "name": "FR3 live personal recommendations",
+      "reason": "Owner OAuth sign-in required"
+    },
+    {
+      "name": "FR4 live personal analysis",
+      "reason": "Owner OAuth sign-in required"
+    },
+    {
+      "name": "Live playlist creation and insertion",
+      "reason": "Owner OAuth sign-in and exact draft confirmation required"
+    }
+  ],
+  "passed": 6,
+  "failed": 0
+}
