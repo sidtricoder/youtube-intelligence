@@ -121,6 +121,16 @@ def rank(query: str, videos: list[Video]) -> list[dict]:
     )
 
 
+def _language_ok(v: Video, c: Constraints) -> bool:
+    requested = (c.language or "").casefold()
+    actual = (v.language or "").casefold()
+    return (
+        not requested
+        or actual == requested
+        or ("-" not in requested and actual.startswith(requested + "-"))
+    )
+
+
 def select(videos: list[Video], c: Constraints) -> list[Video]:
     """Greedy relevance selection; total is an upper bound, never an exact-fill promise.
 
@@ -132,26 +142,50 @@ def select(videos: list[Video], c: Constraints) -> list[Video]:
         if c.max_videos is not None and len(result) >= c.max_videos:
             break
         v = item["video"]
-        requested = (c.language or "").casefold()
-        actual = (v.language or "").casefold()
-        language_ok = (
-            not requested
-            or actual == requested
-            or ("-" not in requested and actual.startswith(requested + "-"))
-        )
         if (
             v.id not in seen
             and 0 < v.seconds
             and (c.min_seconds is None or v.seconds >= c.min_seconds)
             and (c.max_seconds is None or v.seconds <= c.max_seconds)
             and (c.total_seconds is None or used + v.seconds <= c.total_seconds)
-            and language_ok
+            and _language_ok(v, c)
             and item["score"] > 0
         ):
             result.append(v)
             used += v.seconds
             seen.add(v.id)
     return result
+
+
+def violations(videos: list[Video], c: Constraints) -> list[str]:
+    """Independent re-check of a finished selection; empty means every constraint holds."""
+    problems = []
+    if c.max_videos is not None and len(videos) > c.max_videos:
+        problems.append(f"{len(videos)} videos exceeds max_videos={c.max_videos}")
+    if len({v.id for v in videos}) != len(videos):
+        problems.append("duplicate videos")
+    if c.total_seconds is not None and sum(v.seconds for v in videos) > c.total_seconds:
+        problems.append(f"total length exceeds total_seconds={c.total_seconds}")
+    for v in videos:
+        if c.min_seconds is not None and v.seconds < c.min_seconds:
+            problems.append(f"video {v.id} is shorter than min_seconds={c.min_seconds}")
+        if c.max_seconds is not None and v.seconds > c.max_seconds:
+            problems.append(f"video {v.id} is longer than max_seconds={c.max_seconds}")
+        if not _language_ok(v, c):
+            problems.append(f"video {v.id} does not match language={c.language}")
+    return problems
+
+
+def constraint_check(videos: list[Video], c: Constraints) -> dict:
+    """Machine-readable proof, returned with every proposal, that the limits were applied."""
+    seconds = [v.seconds for v in videos]
+    return {
+        "video_count": len(videos),
+        "shortest_seconds": min(seconds) if seconds else None,
+        "longest_seconds": max(seconds) if seconds else None,
+        "total_seconds": sum(seconds),
+        "all_satisfied": not violations(videos, c),
+    }
 
 
 def parse_request(text: str) -> Constraints:

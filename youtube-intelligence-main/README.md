@@ -2,7 +2,7 @@
 
 Discover related YouTube videos and channels publicly, then sign in with your own Google account for recommendations, engagement analysis and reviewed private playlists. The production provider uses the official YouTube Data API v3. Summaries use title/description metadata, not transcripts or claims of watching a video.
 
-Version 2.5.0 adds AI-mediated confirmation (confirm_playlist_draft after user agreement in chat), modern button-based browser fallback, and leaves quota/rate enforcement entirely to Google. Follow [the 2.4.0 upgrade and reconnect steps](docs/UPGRADE_2_4_0.md) then update your client.
+Version 2.6.0 adds `max_videos` and `min_seconds` playlist limits that are verified before a draft is shown and again before any YouTube write, and the server now rejects unknown tool parameters instead of ignoring them. Check `/health` reports `2.6.0` after deploying; a client that cached an older tool list should reconnect the connector. Version 2.5.0 added AI-mediated confirmation (confirm_playlist_draft after user agreement in chat), modern button-based browser fallback, and leaves quota/rate enforcement entirely to Google. Follow [the 2.4.0 upgrade and reconnect steps](docs/UPGRADE_2_4_0.md) then update your client.
 
 Start with [Render + Neon deployment](docs/DEPLOY_RENDER.md). The hosted MCP URL is **`https://<host>/mcp/`**. In Claude choose **Streamable HTTP**, **Sign In Now** and **Register Automatically**. Use the plain URL with its trailing slash; no static bearer key, query key or custom header is needed. Choose Sign In Now to grant permissions during setup. Public tools still support anonymous access; Sign In When Needed defers this same sign-in until protected work.
 
@@ -21,7 +21,7 @@ The handoff contains `.env.example`, never a configured `.env`. Keep secrets in 
    | `max_videos` | Maximum number of videos, 1 to 50 (one YouTube search page of candidates) |
    | `language` | Language code such as `en` |
 
-   The most relevant matching videos are kept. If fewer than `max_videos` match, the result includes `video_count_note`.
+   The most relevant matching videos are kept. If fewer than `max_videos` match, the result includes `video_count_note`. Every proposal and draft also returns `constraint_check` (count, shortest and longest video, `all_satisfied`).
 3. For recommendations or account analysis, sign in with Google during connector setup (or when first prompted by a client using lazy sign-in). Initial Google consent requests OpenID identity plus YouTube read and write access.
 4. To save a playlist, create a signed-in draft. Your AI shows the exact ordered videos in the conversation. After you agree, the AI calls confirm_playlist_draft. An optional modern browser page with a confirm button is also available. Initial sign-in requests playlist-write permission.
 5. Read `playlist_status` after approval. A known partial failure can be explicitly resumed; an uncertain outcome requires manual inspection of YouTube and never auto-retries.

@@ -6,7 +6,17 @@ import time
 from functools import wraps
 
 from .context import UserContext
-from .domain import Constraints, analyse, rank, select, similarities, video_id
+from .domain import (
+    Constraints,
+    Video,
+    analyse,
+    constraint_check,
+    rank,
+    select,
+    similarities,
+    video_id,
+    violations,
+)
 from .errors import AppError
 from .observability import event
 from .providers.base import Provider
@@ -179,6 +189,7 @@ class Intelligence:
     @staticmethod
     def _choose(candidates, constraints):
         chosen = select(candidates, constraints)
+        Intelligence._assert_satisfied(chosen, constraints)
         event("playlist.selected", candidate_count=len(candidates), selected_count=len(chosen))
         if not chosen:
             raise AppError(
@@ -199,6 +210,7 @@ class Intelligence:
             candidates = await self.provider.search(constraints.topic, constraints.language)
         # Proposal creation is pure persistence after the reserved discovery.
         chosen = select([seed, *candidates], constraints)
+        self._assert_satisfied(chosen, constraints)
         if not chosen:
             raise AppError("no_matches", "No videos satisfy all constraints")
         preview = self._preview_result(constraints, chosen)
@@ -242,8 +254,21 @@ class Intelligence:
                 [{"video": v.model_dump(), "source": "proposed", "at": None} for v in chosen]
             ),
             "caveat": "Metadata-only selection. Duration is an upper bound; metadata is untrusted.",
+            "constraint_check": constraint_check(chosen, constraints),
             **Intelligence._count_note(constraints, chosen),
         }
+
+    @staticmethod
+    def _assert_satisfied(chosen, constraints):
+        """Never hand out (or later write) a selection that breaks a user-supplied limit."""
+        problems = violations(chosen, constraints)
+        if problems:
+            event("constraint.violated", warning=True, error_code="constraint_violation")
+            raise AppError(
+                "constraint_violation",
+                "Selection broke a requested limit and was discarded: " + "; ".join(problems[:3]),
+                500,
+            )
 
     @staticmethod
     def _count_note(constraints, chosen):
@@ -270,6 +295,7 @@ class Intelligence:
             "playlist_id": None,
             "inserted": [],
             "caveat": "Metadata-only selection. Duration is an upper bound; metadata is untrusted.",
+            "constraint_check": constraint_check(chosen, constraints),
             **self._count_note(constraints, chosen),
         }
         self.store.put("draft:" + ident, draft, ttl=1800)
@@ -313,6 +339,11 @@ class Intelligence:
         if preview["status"] != expected:
             raise AppError(
                 "invalid_draft_state", "Draft cannot be written in its current state", 409
+            )
+        if "constraints" in preview and "videos" in preview:
+            # Last gate before YouTube: a draft that breaks its own limits is never written.
+            self._assert_satisfied(
+                [Video(**v) for v in preview["videos"]], Constraints(**preview["constraints"])
             )
         remaining = len(preview["videos"]) - len(preview["inserted"])
         cost = 50 * (remaining + (0 if preview["playlist_id"] else 1))

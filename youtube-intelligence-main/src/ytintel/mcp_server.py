@@ -72,7 +72,7 @@ def build_mcp(service_factory, public_base_url="", disconnect=None):
             "to the user in this conversation and receiving clear agreement, call confirm_playlist_draft "
             "to create the playlist. The browser approval_url is an optional fallback with a simple confirm button. "
             "Google alone enforces quota; the app has no daily budgets, rate limits or search caps. "
-            "Length and count bounds are optional: total_seconds (whole playlist), max_seconds/min_seconds (each video) and max_videos (number of videos, up to 50); pass the user's numbers as given and never invent a server cap. Use language codes such as en, not English. "
+            "Length and count bounds are optional: total_seconds (whole playlist), max_seconds/min_seconds (each video) and max_videos (number of videos, up to 50); pass the user's numbers as given and never invent a server cap. Always pass the user's limits as these structured parameters, never only in prose. After every proposal or draft, check that the returned constraints echo exactly what you asked for and that constraint_check.all_satisfied is true; if the echo is missing a limit or a tool reports unknown_parameter, tell the user the server is out of date instead of showing the list. Use language codes such as en, not English. "
             "Never claim a draft or playlist exists unless the tool returns its id and status. If a tool returns error, "
             "report its exact code and request_id; do not replace failed YouTube results with invented videos, courses or unrelated web sources."
         ),
