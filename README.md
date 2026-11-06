@@ -44,12 +44,11 @@ python -m pytest --cov=ytintel --cov-report=term-missing --cov-fail-under=85
 python -m ruff check src tests scripts
 python -m ruff format --check src tests scripts
 ```
-
-These are verification commands, not a claim that the current revision passed them. See [testing and traceability](docs/TESTING.md) for offline, real TCP, database and end-user checks.
+See [testing and traceability](docs/TESTING.md) for offline, real TCP, database and end-user checks.
 
 Ranking uses local TF-IDF over bounded metadata candidates; it is a relevance heuristic, not a quality guarantee. Runtime is a strict ceiling, not an exact-fill promise. Unknown language is excluded when a language is requested. Samples are bounded and disclosed; watch history is unavailable. Dates in engagement comparisons use available activity dates, never substituted video publication dates.
 
-Google alone enforces quota and rate limits. App-level budgets, search caps and request-rate limits have been removed; legacy settings are ignored. Usage counters are informational and account-scoped. Render/Neon free plans still have their own resource and availability limits.
+Google alone enforces quota and rate limit. Usage counters are informational and account-scoped. Render/Neon free plans still have their own resource and availability limits.
 
 
 Read the [requirements interpretation](docs/REQUIREMENTS_INTERPRETATION.md), [architecture](docs/ARCHITECTURE.md), [security model](docs/SECURITY.md) and [video-to-playlist workflow](skills/video-to-playlist/SKILL.md). Older verification snapshots describe their recorded revision, not proof that this multi-account revision has passed live consent or writes.
