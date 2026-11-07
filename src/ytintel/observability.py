@@ -44,6 +44,8 @@ INPUT_FIELDS = {
     "topic",
     "total_seconds",
     "max_seconds",
+    "min_seconds",
+    "max_videos",
     "language",
     "exclude_saved",
     "video",
@@ -90,14 +92,11 @@ def validation_fields(exc: Exception) -> list[str]:
 
     if not isinstance(exc, ValidationError):
         return []
-    return sorted(
-        {
-            str(part)
-            for error in exc.errors(include_input=False, include_context=False)
-            for part in error["loc"]
-            if part in INPUT_FIELDS
-        }
-    )
+    errors = exc.errors(include_input=False, include_context=False)
+    fields = {str(part) for error in errors for part in error["loc"] if part in INPUT_FIELDS}
+    if any("min_seconds cannot exceed max_seconds" in error["msg"] for error in errors):
+        fields |= {"min_seconds", "max_seconds"}
+    return sorted(fields)
 
 
 def invalid_input(exc: Exception) -> dict:
@@ -105,8 +104,14 @@ def invalid_input(exc: Exception) -> dict:
     message = "Invalid input parameters. Use the tool schema and retry."
     if "language" in fields:
         message = "language must be a language code such as 'en' or 'hi', not a language name."
-    elif any(f in fields for f in ("total_seconds", "max_seconds")):
+    elif {"min_seconds", "max_seconds"} <= set(fields):
+        message = "min_seconds cannot exceed max_seconds."
+    elif any(f in fields for f in ("total_seconds", "max_seconds", "min_seconds")):
         message = "Duration bounds must be positive whole seconds; omit them for no duration bound."
+    elif "max_videos" in fields:
+        message = (
+            "max_videos must be a whole number from 1 to 50; omit it for no video-count limit."
+        )
     elif "topic" in fields:
         message = "topic must contain 2 to 200 characters."
     return {

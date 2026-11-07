@@ -120,14 +120,14 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app):
         async with mcp.session_manager.run():
-            event("server.started", version="2.5.0")
+            event("server.started", version="2.6.1")
             event("quota.policy", outcome="google_only")
             yield
-        event("server.stopping", version="2.5.0")
+        event("server.stopping", version="2.6.1")
         await client.aclose()
         raw.close()
 
-    app = FastAPI(title="YouTube Intelligence", version="2.5.0", lifespan=lifespan)
+    app = FastAPI(title="YouTube Intelligence", version="2.6.1", lifespan=lifespan)
     app.state.store, app.state.security, app.state.auth = raw, security, auth
     app.state.mcp, app.state.credentials = mcp, credentials
     app.state.context_factory, app.state.service_factory = context_factory, service_factory

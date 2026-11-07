@@ -8,7 +8,7 @@ from mcp.server.fastmcp import Context
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
 
-from .domain import Constraints, parse_request
+from .domain import MAX_VIDEOS_LIMIT, Constraints, limits_from_text, parse_request
 from .errors import AppError
 from .mcp_observer import ObservedMCP
 from .observability import invalid_input, request_id
@@ -16,13 +16,33 @@ from .observability import invalid_input, request_id
 Topic = Annotated[
     str, Field(min_length=2, max_length=200, description="Search topic, 2 to 200 characters.")
 ]
-Seconds = Annotated[
+
+
+def _seconds(description: str):
+    return Annotated[int | None, Field(default=None, gt=0, strict=True, description=description)]
+
+
+TotalSeconds = _seconds(
+    "Optional maximum combined playlist length in positive whole seconds (e.g. 7200 for 2 hours). "
+    "Omit for no total-length bound; no server duration maximum."
+)
+MaxSeconds = _seconds(
+    "Optional maximum length of any single video in whole seconds (e.g. 1200 for 20 minutes). Omit for no bound."
+)
+MinSeconds = _seconds(
+    "Optional minimum length of every video in whole seconds (e.g. 300 for 5 minutes). "
+    "Must not exceed max_seconds. Omit for no bound."
+)
+MaxVideos = Annotated[
     int | None,
     Field(
         default=None,
-        gt=0,
+        ge=1,
+        le=MAX_VIDEOS_LIMIT,
         strict=True,
-        description="Optional positive whole seconds. Omit for no duration bound; no server duration maximum.",
+        description="Optional maximum number of videos, 1 to 50 (the most relevant videos are kept). "
+        "The server searches several YouTube result pages to find that many. Fewer are returned only if not enough "
+        "match; the result says so in video_count_note. Omit for no count limit.",
     ),
 ]
 Language = Annotated[
@@ -40,6 +60,30 @@ PUBLIC_NOTICE = (
 )
 
 
+def build_constraints(topic, total_seconds, max_seconds, min_seconds, max_videos, language):
+    """Structured limits win; limits written into the topic text fill only the gaps.
+
+    Returns (Constraints, inferred) so the caller can tell the AI exactly what was inferred.
+    """
+    given = {
+        "total_seconds": total_seconds,
+        "max_seconds": max_seconds,
+        "min_seconds": min_seconds,
+        "max_videos": max_videos,
+    }
+    found, remainder = limits_from_text(topic)
+    inferred = {k: v for k, v in found.items() if v is not None and given[k] is None}
+    if inferred and len(remainder) >= 2:
+        topic = remainder
+    return Constraints(topic=topic, language=language, **{**given, **inferred}), inferred
+
+
+def with_inferred(result, inferred):
+    if inferred and isinstance(result, dict):
+        return {**result, "limits_inferred_from_topic": inferred}
+    return result
+
+
 def build_mcp(service_factory, public_base_url="", disconnect=None):
     disconnect_callback = disconnect
     base = public_base_url or "http://localhost:8000"
@@ -53,7 +97,7 @@ def build_mcp(service_factory, public_base_url="", disconnect=None):
             "to the user in this conversation and receiving clear agreement, call confirm_playlist_draft "
             "to create the playlist. The browser approval_url is an optional fallback with a simple confirm button. "
             "Google alone enforces quota; the app has no daily budgets, rate limits or search caps. "
-            "Duration bounds are optional; never invent a server duration cap. Use language codes such as en, not English. "
+            "Length and count bounds are optional: total_seconds (whole playlist), max_seconds/min_seconds (each video) and max_videos (number of videos, up to 50); pass the user's numbers as given and never invent a server cap. Always pass the user's limits as these structured parameters, never only in prose. After every proposal or draft, check that the returned constraints echo exactly what you asked for and that constraint_check.all_satisfied is true; if the echo is missing a limit or a tool reports unknown_parameter, tell the user the server is out of date instead of showing the list. If the result has limits_inferred_from_topic, the server read those limits from your topic text; pass them as parameters next time. Use language codes such as en, not English. "
             "Never claim a draft or playlist exists unless the tool returns its id and status. If a tool returns error, "
             "report its exact code and request_id; do not replace failed YouTube results with invented videos, courses or unrelated web sources."
         ),
@@ -133,27 +177,25 @@ def build_mcp(service_factory, public_base_url="", disconnect=None):
     async def propose_playlist(
         topic: Topic,
         ctx: Context,
-        total_seconds: Seconds = None,
-        max_seconds: Seconds = None,
+        total_seconds: TotalSeconds = None,
+        max_seconds: MaxSeconds = None,
         language: Language = None,
+        min_seconds: MinSeconds = None,
+        max_videos: MaxVideos = None,
     ) -> dict:
         """Stateless public proposal. Durations are optional; omit for no duration bound. No server duration caps. No sign-in. Cannot be approved or created in YouTube."""
 
         async def run():
-            return await service(ctx).preview(
-                Constraints(
-                    topic=topic,
-                    total_seconds=total_seconds,
-                    max_seconds=max_seconds,
-                    language=language,
-                )
+            constraints, inferred = build_constraints(
+                topic, total_seconds, max_seconds, min_seconds, max_videos, language
             )
+            return with_inferred(await service(ctx).preview(constraints), inferred)
 
         return await safe(run(), public=True)
 
     @mcp.tool()
     async def playlist_from_request(request: str, ctx: Context) -> dict:
-        """Parse English duration constraints into a stateless public proposal. No sign-in."""
+        """Parse an English request (e.g. '8 videos, no video over 20 minutes, at least 5 minutes') into a stateless public proposal. Prefer propose_playlist with structured fields. No sign-in."""
 
         async def run():
             return await service(ctx).preview(parse_request(request))
@@ -165,22 +207,19 @@ def build_mcp(service_factory, public_base_url="", disconnect=None):
         video: str,
         topic: Topic,
         ctx: Context,
-        total_seconds: Seconds = None,
-        max_seconds: Seconds = None,
+        total_seconds: TotalSeconds = None,
+        max_seconds: MaxSeconds = None,
         language: Language = None,
+        min_seconds: MinSeconds = None,
+        max_videos: MaxVideos = None,
     ) -> dict:
         """Public metadata summary, similar videos, stateless proposal and analysis. No sign-in."""
 
         async def run():
-            return await service(ctx).video_to_playlist(
-                video,
-                Constraints(
-                    topic=topic,
-                    total_seconds=total_seconds,
-                    max_seconds=max_seconds,
-                    language=language,
-                ),
+            constraints, inferred = build_constraints(
+                topic, total_seconds, max_seconds, min_seconds, max_videos, language
             )
+            return with_inferred(await service(ctx).video_to_playlist(video, constraints), inferred)
 
         return await safe(run(), public=True)
 
@@ -188,22 +227,21 @@ def build_mcp(service_factory, public_base_url="", disconnect=None):
     async def create_playlist_draft(
         topic: Topic,
         ctx: Context,
-        total_seconds: Seconds = None,
-        max_seconds: Seconds = None,
+        total_seconds: TotalSeconds = None,
+        max_seconds: MaxSeconds = None,
         language: Language = None,
+        min_seconds: MinSeconds = None,
+        max_videos: MaxVideos = None,
         exclude_saved: bool = True,
     ) -> dict:
         """FR-5. Requires sign-in. Optional duration bounds; omit for unbounded duration. No server duration caps. Creates a draft; show videos to the user, then call confirm_playlist_draft after agreement. Optional approval_url for browser button fallback. Google write permission is requested at initial connection."""
 
         async def run():
-            return await service(ctx).propose(
-                Constraints(
-                    topic=topic,
-                    total_seconds=total_seconds,
-                    max_seconds=max_seconds,
-                    language=language,
-                ),
-                exclude_saved=exclude_saved,
+            constraints, inferred = build_constraints(
+                topic, total_seconds, max_seconds, min_seconds, max_videos, language
+            )
+            return with_inferred(
+                await service(ctx).propose(constraints, exclude_saved=exclude_saved), inferred
             )
 
         return await safe(run())

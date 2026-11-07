@@ -202,7 +202,8 @@ class GoogleProvider:
                 )
         return result
 
-    async def search(self, query, language=None):
+    @staticmethod
+    def _search_params(query, language):
         params = {
             "part": "snippet",
             "type": "video",
@@ -213,8 +214,45 @@ class GoogleProvider:
         }
         if language:
             params["relevanceLanguage"] = language
-        data = await self.request("search", params)
+        return params
+
+    async def search(self, query, language=None):
+        data = await self.request("search", self._search_params(query, language))
         return await self.videos([x["id"]["videoId"] for x in data.get("items", [])])
+
+    async def search_deep(self, query, language=None, *, buckets=(), enough=None, max_requests=6):
+        """Page through search results until enough candidates qualify.
+
+        buckets restricts YouTube's videoDuration (short/medium/long) so a minimum or maximum
+        length is applied at the source instead of discarding most of a single page. With
+        enough=None one page per bucket is fetched; otherwise pages are fetched round-robin
+        until enough(pool) is true, the results run out, or max_requests searches were made.
+        """
+        lanes = [{"videoDuration": name} for name in buckets] or [{}]
+        tokens, done = [None] * len(lanes), [False] * len(lanes)
+        pool, seen, made = [], set(), 0
+        while made < max_requests and not all(done):
+            for lane_number, lane in enumerate(lanes):
+                if done[lane_number] or made >= max_requests:
+                    continue
+                params = self._search_params(query, language) | lane
+                if tokens[lane_number]:
+                    params["pageToken"] = tokens[lane_number]
+                data = await self.request("search", params)
+                made += 1
+                tokens[lane_number] = data.get("nextPageToken")
+                done[lane_number] = not tokens[lane_number]
+                ids = [
+                    ident
+                    for item in data.get("items", [])
+                    if (ident := item.get("id", {}).get("videoId")) and ident not in seen
+                ]
+                seen.update(ids)
+                if ids:
+                    pool.extend(await self.videos(ids))
+            if enough is None or enough(pool):
+                break
+        return pool
 
     @staticmethod
     def channel_data(item):

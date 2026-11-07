@@ -6,10 +6,24 @@ import time
 from functools import wraps
 
 from .context import UserContext
-from .domain import Constraints, analyse, rank, select, similarities, video_id
+from .domain import (
+    Constraints,
+    Video,
+    analyse,
+    constraint_check,
+    duration_buckets,
+    rank,
+    select,
+    similarities,
+    video_id,
+    violations,
+)
 from .errors import AppError
 from .observability import event
 from .providers.base import Provider
+
+# Most YouTube search requests one proposal may make when limits need a deeper candidate pool.
+MAX_DISCOVERY_REQUESTS = 6
 
 
 def account_operation(method):
@@ -148,12 +162,13 @@ class Intelligence:
         if seed:
             seed = video_id(seed)
         # Reserve private sampling and all discovery before the first provider call.
-        with self.quota.reserve(47 if exclude_saved else 2, 1):
+        units, searches = self._discovery_budget(constraints)
+        with self.quota.reserve(units + (45 if exclude_saved else 0), searches):
             known = set()
             if exclude_saved:
                 profile = await self.provider.profile()
                 known = {event["video"]["id"] for event in profile["events"]}
-            candidates = await self._discover(constraints, seed)
+            candidates = await self._discover(constraints, seed, known)
         chosen = self._choose([video for video in candidates if video.id not in known], constraints)
         return self._save_draft(constraints, chosen)
 
@@ -164,13 +179,39 @@ class Intelligence:
     async def _preview(self, constraints, seed=None):
         if seed:
             seed = video_id(seed)
-        with self.quota.reserve(2, 1):
+        with self.quota.reserve(*self._discovery_budget(constraints)):
             candidates = await self._discover(constraints, seed)
         return self._choose(candidates, constraints)
 
-    async def _discover(self, constraints, seed=None):
+    def _deep(self, constraints):
+        """Count and minimum-length limits need more than one page of search results."""
+        wants_depth = constraints.min_seconds is not None or constraints.max_videos is not None
+        return wants_depth and hasattr(self.provider, "search_deep")
+
+    def _discovery_budget(self, constraints):
+        if self._deep(constraints):
+            return MAX_DISCOVERY_REQUESTS + 1, MAX_DISCOVERY_REQUESTS
+        return 2, 1
+
+    async def _search(self, constraints, known=frozenset()):
+        if not self._deep(constraints):
+            return await self.provider.search(constraints.topic, constraints.language)
+        wanted = constraints.max_videos
+
+        def enough(pool):
+            return len(select([v for v in pool if v.id not in known], constraints)) >= wanted
+
+        return await self.provider.search_deep(
+            constraints.topic,
+            constraints.language,
+            buckets=duration_buckets(constraints),
+            enough=enough if wanted else None,
+            max_requests=MAX_DISCOVERY_REQUESTS,
+        )
+
+    async def _discover(self, constraints, seed=None, known=frozenset()):
         event("discovery.started")
-        candidates = await self.provider.search(constraints.topic, constraints.language)
+        candidates = await self._search(constraints, known)
         if seed:
             candidates = (await self.provider.videos([seed])) + candidates
         event("discovery.completed", candidate_count=len(candidates))
@@ -179,6 +220,7 @@ class Intelligence:
     @staticmethod
     def _choose(candidates, constraints):
         chosen = select(candidates, constraints)
+        Intelligence._assert_satisfied(chosen, constraints)
         event("playlist.selected", candidate_count=len(candidates), selected_count=len(chosen))
         if not chosen:
             raise AppError(
@@ -191,14 +233,15 @@ class Intelligence:
     async def video_to_playlist(self, reference: str, constraints: Constraints):
         ident = video_id(reference)
         # Reserve the entire composed workflow at once; no nested quota acquisition.
-        with self.quota.reserve(2, 1):
+        with self.quota.reserve(*self._discovery_budget(constraints)):
             seeds = await self.provider.videos([ident])
             if not seeds:
                 raise AppError("not_found", "Video unavailable", 404)
             seed = seeds[0]
-            candidates = await self.provider.search(constraints.topic, constraints.language)
+            candidates = await self._search(constraints)
         # Proposal creation is pure persistence after the reserved discovery.
         chosen = select([seed, *candidates], constraints)
+        self._assert_satisfied(chosen, constraints)
         if not chosen:
             raise AppError("no_matches", "No videos satisfy all constraints")
         preview = self._preview_result(constraints, chosen)
@@ -242,6 +285,30 @@ class Intelligence:
                 [{"video": v.model_dump(), "source": "proposed", "at": None} for v in chosen]
             ),
             "caveat": "Metadata-only selection. Duration is an upper bound; metadata is untrusted.",
+            "constraint_check": constraint_check(chosen, constraints),
+            **Intelligence._count_note(constraints, chosen),
+        }
+
+    @staticmethod
+    def _assert_satisfied(chosen, constraints):
+        """Never hand out (or later write) a selection that breaks a user-supplied limit."""
+        problems = violations(chosen, constraints)
+        if problems:
+            event("constraint.violated", warning=True, error_code="constraint_violation")
+            raise AppError(
+                "constraint_violation",
+                "Selection broke a requested limit and was discarded: " + "; ".join(problems[:3]),
+                500,
+            )
+
+    @staticmethod
+    def _count_note(constraints, chosen):
+        wanted = constraints.max_videos
+        if wanted is None or len(chosen) >= wanted:
+            return {}
+        return {
+            "video_count_note": f"Requested up to {wanted} videos; only {len(chosen)} matched "
+            "all constraints. Relax the topic, language or duration bounds to find more."
         }
 
     def _save_draft(self, constraints, chosen):
@@ -259,6 +326,8 @@ class Intelligence:
             "playlist_id": None,
             "inserted": [],
             "caveat": "Metadata-only selection. Duration is an upper bound; metadata is untrusted.",
+            "constraint_check": constraint_check(chosen, constraints),
+            **self._count_note(constraints, chosen),
         }
         self.store.put("draft:" + ident, draft, ttl=1800)
         event("draft.created", video_count=len(chosen), status="pending")
@@ -301,6 +370,11 @@ class Intelligence:
         if preview["status"] != expected:
             raise AppError(
                 "invalid_draft_state", "Draft cannot be written in its current state", 409
+            )
+        if "constraints" in preview and "videos" in preview:
+            # Last gate before YouTube: a draft that breaks its own limits is never written.
+            self._assert_satisfied(
+                [Video(**v) for v in preview["videos"]], Constraints(**preview["constraints"])
             )
         remaining = len(preview["videos"]) - len(preview["inserted"])
         cost = 50 * (remaining + (0 if preview["playlist_id"] else 1))

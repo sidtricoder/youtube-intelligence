@@ -6,7 +6,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class Video(BaseModel):
@@ -26,12 +26,28 @@ class Video(BaseModel):
         return " ".join([self.title, self.description[:2000], *self.tags])
 
 
+# One YouTube search page is the candidate pool, so a larger count could never be honoured.
+MAX_VIDEOS_LIMIT = 50
+
+
 class Constraints(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     topic: str = Field(min_length=2, max_length=200)
     total_seconds: int | None = Field(default=None, gt=0, strict=True)
     max_seconds: int | None = Field(default=None, gt=0, strict=True)
+    min_seconds: int | None = Field(default=None, gt=0, strict=True)
+    max_videos: int | None = Field(default=None, ge=1, le=MAX_VIDEOS_LIMIT, strict=True)
     language: str | None = Field(default=None, pattern=r"^[a-z]{2,3}(-[A-Za-z]{2,4})?$")
+
+    @model_validator(mode="after")
+    def _length_range_is_consistent(self):
+        if (
+            self.min_seconds is not None
+            and self.max_seconds is not None
+            and self.min_seconds > self.max_seconds
+        ):
+            raise ValueError("min_seconds cannot exceed max_seconds")
+        return self
 
 
 def video_id(raw: str) -> str:
@@ -105,24 +121,34 @@ def rank(query: str, videos: list[Video]) -> list[dict]:
     )
 
 
+def _language_ok(v: Video, c: Constraints) -> bool:
+    requested = (c.language or "").casefold()
+    actual = (v.language or "").casefold()
+    return (
+        not requested
+        or actual == requested
+        or ("-" not in requested and actual.startswith(requested + "-"))
+    )
+
+
 def select(videos: list[Video], c: Constraints) -> list[Video]:
-    """Greedy relevance selection; total is an upper bound, never an exact-fill promise."""
+    """Greedy relevance selection; total is an upper bound, never an exact-fill promise.
+
+    max_seconds/min_seconds bound each video; total_seconds bounds the playlist runtime;
+    max_videos bounds how many videos are returned (most relevant first).
+    """
     seen, result, used = set(), [], 0
     for item in rank(c.topic, videos):
+        if c.max_videos is not None and len(result) >= c.max_videos:
+            break
         v = item["video"]
-        requested = (c.language or "").casefold()
-        actual = (v.language or "").casefold()
-        language_ok = (
-            not requested
-            or actual == requested
-            or ("-" not in requested and actual.startswith(requested + "-"))
-        )
         if (
             v.id not in seen
             and 0 < v.seconds
+            and (c.min_seconds is None or v.seconds >= c.min_seconds)
             and (c.max_seconds is None or v.seconds <= c.max_seconds)
             and (c.total_seconds is None or used + v.seconds <= c.total_seconds)
-            and language_ok
+            and _language_ok(v, c)
             and item["score"] > 0
         ):
             result.append(v)
@@ -131,34 +157,117 @@ def select(videos: list[Video], c: Constraints) -> list[Video]:
     return result
 
 
+def violations(videos: list[Video], c: Constraints) -> list[str]:
+    """Independent re-check of a finished selection; empty means every constraint holds."""
+    problems = []
+    if c.max_videos is not None and len(videos) > c.max_videos:
+        problems.append(f"{len(videos)} videos exceeds max_videos={c.max_videos}")
+    if len({v.id for v in videos}) != len(videos):
+        problems.append("duplicate videos")
+    if c.total_seconds is not None and sum(v.seconds for v in videos) > c.total_seconds:
+        problems.append(f"total length exceeds total_seconds={c.total_seconds}")
+    for v in videos:
+        if c.min_seconds is not None and v.seconds < c.min_seconds:
+            problems.append(f"video {v.id} is shorter than min_seconds={c.min_seconds}")
+        if c.max_seconds is not None and v.seconds > c.max_seconds:
+            problems.append(f"video {v.id} is longer than max_seconds={c.max_seconds}")
+        if not _language_ok(v, c):
+            problems.append(f"video {v.id} does not match language={c.language}")
+    return problems
+
+
+def constraint_check(videos: list[Video], c: Constraints) -> dict:
+    """Machine-readable proof, returned with every proposal, that the limits were applied."""
+    seconds = [v.seconds for v in videos]
+    return {
+        "video_count": len(videos),
+        "shortest_seconds": min(seconds) if seconds else None,
+        "longest_seconds": max(seconds) if seconds else None,
+        "total_seconds": sum(seconds),
+        "all_satisfied": not violations(videos, c),
+    }
+
+
+_NUM = r"(\d+(?:\.\d+)?)"
+_UNIT = r"(hours?|hrs?|minutes?|mins?)"
+_LIMIT_PATTERNS = {
+    "total_seconds": (
+        rf"{_NUM}\s*{_UNIT}\s+(?:long\s+)?playlist",
+        rf"playlist\s+(?:of|totall?ing|lasting|up to|under)\s+{_NUM}\s*{_UNIT}",
+    ),
+    "max_seconds": (
+        rf"(?:(?:each|every)\s+video\s+)?(?:no video over|no longer than|at most|(?<!no video )(?:under|shorter than)"
+        rf"|\bmax(?:imum)?(?:[ _]video)?(?:[ _](?:length|duration))?(?:\s+of)?)\s*[:=]?\s*{_NUM}\s*{_UNIT}",
+    ),
+    "min_seconds": (
+        rf"(?:(?:each|every)\s+video\s+)?(?:at least|no video (?:under|shorter than)|(?<!no )longer than"
+        rf"|\b(?:minimum|min(?=[ _](?:video|length|duration)))(?:[ _]video)?(?:[ _](?:length|duration))?(?:\s+of)?)"
+        rf"\s*[:=]?\s*{_NUM}\s*{_UNIT}",
+        rf"{_NUM}\s*{_UNIT}\s*(?:or (?:more|longer)|minimum|\+)",
+        rf"{_NUM}\+\s*{_UNIT}",
+    ),
+    "max_videos": (
+        r"(?:\b(?:up to|at most|no more than|max(?:imum)?(?: of)?|limit(?: of)?|exactly|only)\s+)?"
+        r"\b(\d{1,3})[\s-]+videos?\b",
+        r"\b(?:max(?:imum)?|number of|limit)[ _](?:of[ _])?videos?\s*[:=]?\s*(\d{1,3})\b",
+    ),
+}
+
+
+def _seconds_of(match) -> int:
+    return int(float(match[1]) * (3600 if match[2].lower().startswith("h") else 60))
+
+
+def limits_from_text(text: str) -> tuple[dict, str]:
+    """Find explicit length/count limits written in prose; return them and the text without them."""
+    found, spans = {}, []
+    for field, patterns in _LIMIT_PATTERNS.items():
+        for pattern in patterns:
+            match = re.search(pattern, text, re.I)
+            if match:
+                found[field] = int(match[1]) if field == "max_videos" else _seconds_of(match)
+                spans.append(match.span())
+                break
+    remainder = text
+    for start, end in sorted(spans, reverse=True):
+        remainder = remainder[:start] + remainder[end:]
+    remainder = re.sub(r"(?:\s*[,;]\s*){2,}", ", ", remainder)
+    remainder = re.sub(r"\s+", " ", remainder).strip(" ,;:-")
+    return {f: found.get(f) for f in _LIMIT_PATTERNS}, remainder
+
+
 def parse_request(text: str) -> Constraints:
     """Deliberately bounded English grammar; unrestricted language belongs to the MCP client."""
     if len(text) > 1000:
         raise ValueError("Request too long")
-    total = re.search(
-        r"(\d+(?:\.\d+)?)\s*(hours?|hrs?|minutes?|mins?)\s+(?:long\s+)?playlist", text, re.I
-    )
-    cap = re.search(
-        r"(?:no video over|max(?:imum)?(?: video length)?|under)\s+(\d+(?:\.\d+)?)\s*(hours?|minutes?|mins?)",
-        text,
-        re.I,
-    )
+    limits, _ = limits_from_text(text)
     topic = re.search(r"\bon\s+(.+?)(?:,|;|$)", text, re.I)
     lang = re.search(r"\blanguage\s+([a-z]{2,3}(?:-[A-Za-z]{2,4})?)\b", text, re.I)
     if not topic or not re.search(r"\bplaylist\b", text, re.I):
         raise ValueError(
-            "Use: Build a 2 hour playlist on Python, no video over 20 minutes, language en; or send structured constraints"
+            "Use: Build a 2 hour playlist on Python, 8 videos, no video over 20 minutes, at least 5 minutes, language en; or send structured constraints"
         )
-
-    def sec(m):
-        return int(float(m[1]) * (3600 if m[2].lower().startswith(("h", "hr")) else 60))
-
     return Constraints(
         topic=topic[1].strip(),
-        total_seconds=sec(total) if total else None,
-        max_seconds=sec(cap) if cap else None,
         language=lang[1].lower() if lang else None,
+        **limits,
     )
+
+
+# YouTube search can filter by duration: short < 4 min, medium 4-20 min, long > 20 min.
+YOUTUBE_DURATION_BUCKETS = (("short", 1, 239), ("medium", 240, 1200), ("long", 1201, None))
+
+
+def duration_buckets(c: Constraints) -> list[str]:
+    """YouTube duration buckets that can hold a video allowed by c; empty means search 'any'."""
+    low = c.min_seconds or 1
+    names = [
+        name
+        for name, bucket_low, bucket_high in YOUTUBE_DURATION_BUCKETS
+        if (c.max_seconds is None or bucket_low <= c.max_seconds)
+        and (bucket_high is None or low <= bucket_high)
+    ]
+    return [] if len(names) == len(YOUTUBE_DURATION_BUCKETS) else names
 
 
 def analyse(
