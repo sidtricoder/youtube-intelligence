@@ -220,6 +220,7 @@ _LIMIT_PATTERNS = {
         r"(?:\b(?:up to|at most|no more than|max(?:imum)?(?: of)?|limit(?: of)?|exactly|only)\s+)?"
         r"\b(\d{1,3})[\s-]+videos?\b",
         r"\b(?:max(?:imum)?|number of|limit)[ _](?:of[ _])?videos?\s*[:=]?\s*(\d{1,3})\b",
+        r"\b(\d{1,3})\s+or\s+(?:fewer|less)\s+videos?\b",
     ),
 }
 

@@ -559,3 +559,14 @@ async def test_fresh_videos_bypasses_the_response_cache(tmp_path):
     assert (await provider.fresh_videos(["aaaaaaaaaaa"]))[0].seconds == 299
     assert len(hits) == 2, "fresh_videos must hit videos.list again"
     store.close()
+
+
+def test_or_fewer_videos_is_read_as_a_count_cap():
+    assert limits_from_text("Python, 15 or fewer videos")[0]["max_videos"] == 15
+
+
+def test_owner_form_sends_the_video_count_limit():
+    from pathlib import Path
+
+    html = (Path(__file__).parent.parent / "src/ytintel/owner.html").read_text(encoding="utf-8")
+    assert 'id="count"' in html and "max_videos:Number($('count').value)" in html
