@@ -1,4 +1,4 @@
-"""Demonstrate public MCP previews, optionally using an externally obtained OAuth token."""
+"""List MCP tools and, with an externally obtained OAuth token, create a playlist draft."""
 
 import asyncio
 import json
@@ -29,24 +29,28 @@ async def main():
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     print("Tools:", ", ".join(t.name for t in (await session.list_tools()).tools))
+                    if not token:
+                        print(
+                            "No MCP_ACCESS_TOKEN set: create_playlist_draft requires sign-in. "
+                            "Sign in on /tester or connect an AI client to build a draft."
+                        )
+                        return 0
                     result = await session.call_tool(
-                        "propose_playlist",
+                        "create_playlist_draft",
                         {
                             "topic": "Python programming",
-                            "total_seconds": 3600,
+                            "video_count": 5,
                             "max_seconds": 1200,
                             "language": "en",
                         },
                     )
                     if result.isError:
-                        print("FAIL: public preview tool returned an error.")
+                        print("FAIL: create_playlist_draft returned an error.")
                         return 1
                     for block in result.content:
                         if block.type == "text":
                             print(json.dumps(json.loads(block.text), indent=2))
-                    print(
-                        "Public preview complete. Sign in on the website to save and approve a draft."
-                    )
+                    print("Draft created. Confirm it with confirm_playlist_draft or approval_url.")
     except Exception as exc:
         status = http_status(exc)
         if status:

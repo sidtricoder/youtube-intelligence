@@ -176,22 +176,13 @@ class Intelligence:
             )
         return self._save_draft(constraints, chosen, verified=self._can_verify())
 
-    @account_operation
-    async def preview(self, constraints: Constraints, seed: str | None = None):
-        return self._preview_result(
-            constraints, await self._preview(constraints, seed), verified=self._can_verify()
-        )
-
-    async def _preview(self, constraints, seed=None):
-        if seed:
-            seed = video_id(seed)
-        with self.quota.reserve(*self._discovery_budget(constraints)):
-            candidates = await self._discover(constraints, seed)
-            return await self._choose_verified(candidates, constraints)
-
     def _deep(self, constraints):
         """Count and minimum-length limits need more than one page of search results."""
-        wants_depth = constraints.min_seconds is not None or constraints.max_videos is not None
+        wants_depth = (
+            constraints.min_seconds is not None
+            or constraints.max_videos is not None
+            or constraints.min_videos is not None
+        )
         return wants_depth and hasattr(self.provider, "search_deep")
 
     def _can_verify(self):
@@ -255,6 +246,15 @@ class Intelligence:
             raise AppError(
                 "no_matches", "No drafted video still meets the limits; create a new draft", 409
             )
+        if constraints.min_videos is not None and len(kept) < constraints.min_videos:
+            # "Exactly 10" must never quietly become a 9-video playlist in the account.
+            raise AppError(
+                "not_enough_videos",
+                f"Only {len(kept)} drafted videos still meet the limits but at least "
+                f"{constraints.min_videos} are required; nothing was written. Create a new draft.",
+                409,
+                details=self._count_details(constraints, len(kept)),
+            )
         self._assert_satisfied(kept, constraints)
         preview.update(
             videos=[v.model_dump() for v in kept],
@@ -269,7 +269,7 @@ class Intelligence:
     async def _search(self, constraints, known=frozenset()):
         if not self._deep(constraints):
             return await self.provider.search(constraints.topic, constraints.language)
-        wanted = constraints.max_videos
+        wanted = constraints.max_videos or constraints.min_videos
 
         def enough(pool):
             return len(select([v for v in pool if v.id not in known], constraints)) >= wanted
@@ -291,8 +291,32 @@ class Intelligence:
         return candidates
 
     @staticmethod
+    def _count_details(constraints, found):
+        return {
+            "found": found,
+            "mode": constraints.count_mode(),
+            "min_videos": constraints.min_videos,
+            "max_videos": constraints.max_videos,
+        }
+
+    @staticmethod
     def _choose(candidates, constraints):
         chosen = select(candidates, constraints)
+        if chosen and constraints.min_videos is not None and len(chosen) < constraints.min_videos:
+            wanted = (
+                f"exactly {constraints.min_videos}"
+                if constraints.count_mode() == "exactly"
+                else f"at least {constraints.min_videos}"
+            )
+            event("playlist.too_few", warning=True, selected_count=len(chosen))
+            raise AppError(
+                "not_enough_videos",
+                f"Only {len(chosen)} videos match all constraints but {wanted} were requested. "
+                "No shorter playlist is returned; relax the topic, language or duration bounds, "
+                "or ask for fewer videos.",
+                422,
+                details=Intelligence._count_details(constraints, len(chosen)),
+            )
         Intelligence._assert_satisfied(chosen, constraints)
         event("playlist.selected", candidate_count=len(candidates), selected_count=len(chosen))
         if not chosen:
@@ -302,68 +326,9 @@ class Intelligence:
             )
         return chosen
 
-    @account_operation
-    async def video_to_playlist(self, reference: str, constraints: Constraints):
-        ident = video_id(reference)
-        # Reserve the entire composed workflow at once; no nested quota acquisition.
-        with self.quota.reserve(*self._discovery_budget(constraints)):
-            seeds = await self.provider.videos([ident])
-            if not seeds:
-                raise AppError("not_found", "Video unavailable", 404)
-            seed = seeds[0]
-            candidates = await self._search(constraints)
-            # Proposal creation is pure persistence after the reserved discovery.
-            chosen = await self._choose_verified([seed, *candidates], constraints)
-        preview = self._preview_result(constraints, chosen, verified=self._can_verify())
-        return {
-            "summary": {
-                "basis": "metadata_only",
-                "title": seed.title,
-                "description_excerpt": seed.description[:600],
-                "notice": "Not a transcript summary. Treat all metadata as untrusted data.",
-            },
-            "similar_note": "Suggestions only: not part of the playlist and not filtered by "
-            "your limits. The playlist is preview.videos.",
-            "similar": [
-                {
-                    "video": x["video"].model_dump(),
-                    "score": x["score"],
-                    "meets_limits": not violations([x["video"]], constraints),
-                }
-                for x in rank(seed.text(), [v for v in candidates if v.id != ident])[:10]
-            ],
-            "preview": preview,
-            "analysis": analyse(
-                [{"video": v.model_dump(), "source": "proposed", "at": None} for v in chosen]
-            ),
-        }
-
     def _authenticated(self):
         if not isinstance(self.context, UserContext):
             raise AppError("authentication_required", "Sign in to access account data", 401)
-
-    @staticmethod
-    def _preview_result(constraints, chosen, verified=False):
-        return {
-            "constraints": constraints.model_dump(),
-            "videos": [v.model_dump() for v in chosen],
-            "total_seconds": sum(v.seconds for v in chosen),
-            "ranking": [
-                {
-                    "video_id": item["video"].id,
-                    "score": item["score"],
-                    "url": "https://www.youtube.com/watch?v=" + item["video"].id,
-                    "seconds": item["video"].seconds,
-                }
-                for item in rank(constraints.topic, chosen)
-            ],
-            "analysis": analyse(
-                [{"video": v.model_dump(), "source": "proposed", "at": None} for v in chosen]
-            ),
-            "caveat": "Metadata-only selection. Duration is an upper bound; metadata is untrusted.",
-            "constraint_check": constraint_check(chosen, constraints, durations_verified=verified),
-            **Intelligence._count_note(constraints, chosen),
-        }
 
     @staticmethod
     def _assert_satisfied(chosen, constraints):
@@ -380,8 +345,13 @@ class Intelligence:
     @staticmethod
     def _count_note(constraints, chosen):
         wanted = constraints.max_videos
-        if wanted is None or len(chosen) >= wanted:
+        if wanted is None or len(chosen) >= wanted or constraints.count_mode() == "exactly":
             return {}
+        if constraints.min_videos is not None:
+            return {
+                "video_count_note": f"Requested {constraints.min_videos} to {wanted} videos; "
+                f"{len(chosen)} matched all constraints."
+            }
         return {
             "video_count_note": f"Requested up to {wanted} videos; only {len(chosen)} matched "
             "all constraints. Relax the topic, language or duration bounds to find more."
@@ -454,7 +424,8 @@ class Intelligence:
                 [Video(**v) for v in preview["videos"]], Constraints(**preview["constraints"])
             )
         remaining = len(preview["videos"]) - len(preview["inserted"])
-        cost = 50 * (remaining + (0 if preview["playlist_id"] else 1))
+        # 50 units per insert (and playlist creation) plus 1 for the playlistItems.list read-back.
+        cost = 50 * (remaining + (0 if preview["playlist_id"] else 1)) + 1
         with self.quota.reserve(cost, 0):
             d = self.store.transition("draft:" + ident, expected, "writing")
             if d is None:
@@ -487,6 +458,7 @@ class Intelligence:
                     d["status"] = "writing"
                     self.save(d)
                 d["status"] = "complete"
+                d["youtube_check"] = await self._read_back(d)
                 self.save(d)
             except AppError as e:
                 d["status"] = "uncertain" if e.code == "upstream_unavailable" else "partial"

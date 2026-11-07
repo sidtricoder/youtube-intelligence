@@ -123,7 +123,7 @@ async def test_live_smoke_uses_one_public_video_call_without_oauth(monkeypatch, 
 
 
 @pytest.mark.parametrize("token", [None, "externally-issued-token"])
-async def test_mcp_client_uses_public_tool_with_optional_oauth_bearer(monkeypatch, capsys, token):
+async def test_mcp_client_drafts_only_with_an_oauth_bearer(monkeypatch, capsys, token):
     module = script("mcp_client")
     monkeypatch.setenv("MCP_URL", "https://intel.example/mcp/")
     monkeypatch.delenv("MCP_ACCESS_TOKEN", raising=False)
@@ -150,7 +150,7 @@ async def test_mcp_client_uses_public_tool_with_optional_oauth_bearer(monkeypatc
             pass
 
         async def list_tools(self):
-            return SimpleNamespace(tools=[SimpleNamespace(name="propose_playlist")])
+            return SimpleNamespace(tools=[SimpleNamespace(name="create_playlist_draft")])
 
         async def call_tool(self, name, arguments):
             seen["tool"] = name
@@ -165,7 +165,7 @@ async def test_mcp_client_uses_public_tool_with_optional_oauth_bearer(monkeypatc
     assert seen == {
         "url": "https://intel.example/mcp/",
         "authorization": "Bearer " + token if token else None,
-        "tool": "propose_playlist",
+        **({"tool": "create_playlist_draft"} if token else {}),
     }
     assert "externally-issued-token" not in capsys.readouterr().out
 

@@ -41,30 +41,13 @@ async def test_anonymous_discovery_stateless_workflow_and_negative_errors(server
         assert (await call(session, "video_summary", {"video": "aaaaaaaaaaa"}))[
             "basis"
         ] == "metadata_only"
-        args = {"topic": "Python", "total_seconds": 1800, "max_seconds": 900, "language": "en"}
-        preview = await call(session, "propose_playlist", args)
-        assert preview["videos"] and preview["personalised"] is False
-        assert not {"id", "status", "approval_url", "user_id"} & preview.keys()
-        workflow = await call(session, "video_to_playlist", {"video": "aaaaaaaaaaa", **args})
-        assert workflow["summary"]["basis"] == "metadata_only"
-        assert workflow["similar"] and workflow["analysis"]["sample_count"] > 0
-        assert "id" not in workflow["preview"] and "draft" not in workflow
-        natural = await call(
-            session,
-            "playlist_from_request",
-            {"request": "Build a 2 hour playlist on Python, no video over 20 minutes, language en"},
-        )
-        assert natural["constraints"]["total_seconds"] == 7200
-        assert natural["constraints"]["max_seconds"] == 1200
+        assert not {"propose_playlist", "playlist_from_request", "video_to_playlist"} & set(tools)
         assert (
             await call(session, "similar_videos", {"video": "https://evil.test/?v=aaaaaaaaaaa"})
         )["error"]["code"] == "invalid_input"
         assert (await call(session, "similar_videos", {"video": "zzzzzzzzzzz"}))["error"][
             "code"
         ] == "not_found"
-        assert (await call(session, "propose_playlist", {**args, "total_seconds": -1}))["error"][
-            "code"
-        ] == "invalid_input"
     assert not server.providers["public"].created
     raw = server.app.state.store
     with raw.tx() as db:

@@ -42,7 +42,7 @@ async def test_drafts_and_private_cache_are_isolated(raw):
     assert raw.get("cache:profile") is None
 
 
-async def test_anonymous_preview_has_no_draft_or_user_writes(raw):
+async def test_anonymous_caller_cannot_build_a_playlist_or_write_user_data(raw):
     quota = TenantQuota(raw, "ip-hash", anonymous=True)
     app = Intelligence(
         FixtureProvider(), PublicStore(raw), quota, context=AnonymousContext("127.0.0.1", quota)
@@ -52,12 +52,10 @@ async def test_anonymous_preview_has_no_draft_or_user_writes(raw):
         pytest.fail("Anonymous preview must not access a private profile")
 
     app.provider.profile = forbidden_profile
-    result = await app.preview(Constraints(topic="Python", total_seconds=1800, max_seconds=1200))
-    assert result["videos"] and "id" not in result
-    result = await app.video_to_playlist(
-        "aaaaaaaaaaa", Constraints(topic="Python", total_seconds=1800, max_seconds=1200)
-    )
-    assert "preview" in result and "draft" not in result
+    with pytest.raises(AppError) as caught:
+        await app.propose(Constraints(topic="Python", total_seconds=1800, max_seconds=1200))
+    assert caught.value.code == "authentication_required"
+    assert (await app.summary("aaaaaaaaaaa"))["basis"] == "metadata_only"
     with raw.tx() as db:
         for name in ("drafts", "tenant_cache"):
             assert (
@@ -206,14 +204,15 @@ def test_user_context_requires_nonempty_identity(raw, user_id):
         UserContext(user_id, credentials, TenantQuota(raw, "fixture"))
 
 
-async def test_public_summary_and_preview_have_metadata_links(raw):
+async def test_public_summary_and_draft_have_metadata_links(raw):
     app = service(raw, "alice")
     summary = await app.summary("aaaaaaaaaaa")
     assert summary["basis"] == "metadata_only"
     assert summary["url"] == "https://www.youtube.com/watch?v=aaaaaaaaaaa"
-    result = await app.preview(Constraints(topic="Python", total_seconds=1800, max_seconds=1200))
-    assert result["ranking"][0]["url"].startswith("https://www.youtube.com/watch?v=")
-    assert result["analysis"]["sample_count"] == len(result["videos"])
+    draft = await app.propose(
+        Constraints(topic="Python", total_seconds=1800, max_seconds=1200), exclude_saved=False
+    )
+    assert draft["videos"] and draft["constraint_check"]["all_satisfied"] is True
 
 
 @pytest.mark.parametrize("operation", ["get", "put", "take", "transition", "delete_prefix"])

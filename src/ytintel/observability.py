@@ -46,6 +46,9 @@ INPUT_FIELDS = {
     "max_seconds",
     "min_seconds",
     "max_videos",
+    "min_videos",
+    "video_count",
+    "count_mode",
     "language",
     "exclude_saved",
     "video",
@@ -96,6 +99,8 @@ def validation_fields(exc: Exception) -> list[str]:
     fields = {str(part) for error in errors for part in error["loc"] if part in INPUT_FIELDS}
     if any("min_seconds cannot exceed max_seconds" in error["msg"] for error in errors):
         fields |= {"min_seconds", "max_seconds"}
+    if any("min_videos cannot exceed max_videos" in error["msg"] for error in errors):
+        fields |= {"min_videos", "max_videos"}
     return sorted(fields)
 
 
@@ -108,6 +113,12 @@ def invalid_input(exc: Exception) -> dict:
         message = "min_seconds cannot exceed max_seconds."
     elif any(f in fields for f in ("total_seconds", "max_seconds", "min_seconds")):
         message = "Duration bounds must be positive whole seconds; omit them for no duration bound."
+    elif {"min_videos", "max_videos"} <= set(fields):
+        message = "The minimum video count cannot exceed max_videos."
+    elif any(f in fields for f in ("video_count", "min_videos")):
+        message = "video_count must be a whole number from 1 to 50."
+    elif "count_mode" in fields:
+        message = "count_mode must be one of exactly, at_least or at_most."
     elif "max_videos" in fields:
         message = (
             "max_videos must be a whole number from 1 to 50; omit it for no video-count limit."
@@ -127,11 +138,12 @@ def invalid_input(exc: Exception) -> dict:
 def safe_route(path: str) -> str:
     if path.startswith("/approve/"):
         return "/approve/{draft_id}" + ("/enable-writes" if path.endswith("/enable-writes") else "")
-    if path.startswith("/api/drafts/") and path != "/api/drafts/from-request":
+    if path.startswith("/api/drafts/"):
         return "/api/drafts/{draft_id}"
     known = {
         "/",
         "/health",
+        "/tester",
         "/mcp",
         "/mcp/",
         "/authorize",
@@ -142,9 +154,7 @@ def safe_route(path: str) -> str:
         "/oauth/start",
         "/oauth/callback",
         "/oauth/consent",
-        "/api/preview",
         "/api/drafts",
-        "/api/drafts/from-request",
         "/api/disconnect",
         "/api/quota",
         "/api/recommendations",

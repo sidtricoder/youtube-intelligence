@@ -23,9 +23,9 @@ Security modules keep provider/storage/policy/transport concerns separate. Some 
 
 ## Access and identity
 
-Public calls: `similar_videos`, `similar_channels`, metadata-only `video_summary`, `propose_playlist`, `playlist_from_request`, `video_to_playlist`. Preview responses are stateless: they cannot authorize writes or allocate a persistent user draft. Authentication adds profile-aware exclusion where appropriate.
+Public calls: `similar_videos`, `similar_channels`, metadata-only `video_summary`. Playlists are built only by the protected `create_playlist_draft`; there is no public playlist preview.
 
-Protected calls: `recommendations`, `engagement_analysis`, `create_playlist_draft`, `playlist_status`, `disconnect`. Each resolves a verified subject and a user-scoped repository/quota/provider. No input argument selects another user. Protocol initialization/lists/ping/notifications are anonymously reachable, but a supplied invalid token is rejected before dispatch. Unknown operations require authorization. Mixed batches apply policy to every member; one protected member cannot be smuggled through a public wrapper.
+Protected calls: `recommendations`, `engagement_analysis`, `create_playlist_draft`, `confirm_playlist_draft`, `playlist_status`, `disconnect`. Each resolves a verified subject and a user-scoped repository/quota/provider. No input argument selects another user. Protocol initialization/lists/ping/notifications are anonymously reachable, but a supplied invalid token is rejected before dispatch. Unknown operations require authorization. Mixed batches apply policy to every member; one protected member cannot be smuggled through a public wrapper.
 
 The SDK's OAuth routes advertise dynamic registration. Redirects are HTTPS or HTTP loopback, registered exactly. CIMD is unsupported and not advertised. Protected-resource discovery is rooted at `/.well-known/oauth-protected-resource`, and the resource challenge names `youtube:read`. This app scope does not grant Google's write permission. The root Google callback remains `/oauth/callback` under the configured origin; `/mcp/` is only the Streamable HTTP endpoint.
 

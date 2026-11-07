@@ -4,7 +4,12 @@ import time
 import httpx
 import pytest
 
-from tests.wire_helpers import call, mcp_session, rpc, running_server, tool
+from tests.wire_helpers import call, login, mcp_session, rpc, running_server, tool
+
+
+async def signed_in_token(wire):
+    async with httpx.AsyncClient(base_url=wire.origin, trust_env=False) as browser:
+        return (await login(wire, browser, "alice"))["access_token"]
 
 
 @pytest.fixture(autouse=True)
@@ -21,17 +26,20 @@ def events(caplog):
     return [r.__dict__.get("event_data", {}) for r in caplog.records if r.name == "ytintel"]
 
 
-async def test_public_tool_logs_correlated_success_without_private_arguments(tmp_path, caplog):
+async def test_draft_tool_logs_correlated_success_without_private_arguments(tmp_path, caplog):
     with running_server(tmp_path) as wire:
+        token = await signed_in_token(wire)
         with caplog.at_level("INFO", logger="ytintel"):
-            async with mcp_session(wire) as session:
-                result = await call(session, "propose_playlist", {"topic": "Python secret-topic"})
+            async with mcp_session(wire, token) as session:
+                result = await call(
+                    session, "create_playlist_draft", {"topic": "Python secret-topic"}
+                )
         assert result["videos"]
         records = events(caplog)
         started = next(e for e in records if e.get("event") == "tool.started")
         finished = next(e for e in records if e.get("event") == "tool.completed")
         assert started["request_id"] == finished["request_id"]
-        assert finished["tool"] == "propose_playlist" and finished["outcome"] == "success"
+        assert finished["tool"] == "create_playlist_draft" and finished["outcome"] == "success"
         assert "secret-topic" not in json.dumps(records)
         assert any(e.get("event") == "quota.reserved" for e in records)
         assert any(e.get("event") == "playlist.selected" for e in records)
@@ -39,10 +47,13 @@ async def test_public_tool_logs_correlated_success_without_private_arguments(tmp
 
 async def test_invalid_language_reports_field_and_logs_no_input_values(tmp_path, caplog):
     with running_server(tmp_path) as wire:
+        token = await signed_in_token(wire)
         with caplog.at_level("INFO", logger="ytintel"):
-            async with mcp_session(wire) as session:
+            async with mcp_session(wire, token) as session:
                 result = await call(
-                    session, "propose_playlist", {"topic": "Python", "language": "private-invalid"}
+                    session,
+                    "create_playlist_draft",
+                    {"topic": "Python", "language": "private-invalid"},
                 )
         error = result["error"]
         assert error["code"] == "invalid_input" and error["request_id"]
@@ -139,9 +150,12 @@ async def test_provider_failure_logs_safe_code_status_not_upstream_message(tmp_p
 
 async def test_sdk_rejects_wrong_argument_type_with_safe_diagnostics(tmp_path, caplog):
     with running_server(tmp_path) as wire:
+        token = await signed_in_token(wire)
         with caplog.at_level("INFO", logger="ytintel"):
-            async with mcp_session(wire) as session:
-                result = await call(session, "propose_playlist", {"topic": ["private-wrong-type"]})
+            async with mcp_session(wire, token) as session:
+                result = await call(
+                    session, "create_playlist_draft", {"topic": ["private-wrong-type"]}
+                )
         assert result["error"]["code"] == "invalid_input"
         assert result["error"]["fields"] == ["topic"]
         assert any(e.get("event") == "tool.failed" for e in events(caplog))
@@ -154,7 +168,7 @@ async def test_playlist_tool_schema_explains_language_and_positive_optional_dura
 
     tools = await build_mcp(lambda _: None).list_tools()
     for item in tools:
-        if item.name in {"propose_playlist", "create_playlist_draft", "video_to_playlist"}:
+        if item.name == "create_playlist_draft":
             properties = item.inputSchema["properties"]
             assert "en" in properties["language"]["description"]
             assert "seconds" in properties["total_seconds"]["description"]

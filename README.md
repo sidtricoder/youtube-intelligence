@@ -2,7 +2,11 @@
 
 Discover related YouTube videos and channels publicly, then sign in with your own Google account for recommendations, engagement analysis and reviewed private playlists. The production provider uses the official YouTube Data API v3. Summaries use title/description metadata, not transcripts or claims of watching a video.
 
-Version 2.6.2 follows the search -> exact durations -> filter -> cap -> create -> insert workflow: the duration of every video in a proposal is re-read from `videos.list` without the cache before it is shown, and again right before the playlist is created, so a video that was trimmed, removed or mis-reported is replaced or skipped (reported in `skipped`) instead of being added. Each result's `constraint_check` names the shortest video and says whether durations were re-verified. In `video_to_playlist`, the `similar` list is labelled as unfiltered suggestions (each item has `meets_limits`); the playlist is `preview.videos`. Version 2.6.1 made `max_videos` and `min_seconds` reliable. A count or minimum length now searches YouTube by duration bucket and pages through up to 6 search requests until enough videos qualify (one page of 50 results often holds fewer than 30 videos of 5+ minutes), and limits written into the topic text ("30 videos, min 5 minutes") are applied and reported in `limits_inferred_from_topic`. Parsing of "minimum 5 minutes", "30-video playlist" and similar phrasings was fixed. Limits are verified before a draft is shown and again before any YouTube write, and unknown tool parameters are rejected instead of ignored. Check `/health` reports `2.6.2` after deploying; a client that cached an older tool list should reconnect the connector. Version 2.5.0 added AI-mediated confirmation (confirm_playlist_draft after user agreement in chat), modern button-based browser fallback, and leaves quota/rate enforcement entirely to Google. Follow [the 2.4.0 upgrade and reconnect steps](docs/UPGRADE_2_4_0.md) then update your client.
+Playlists are built only by the signed-in `create_playlist_draft` tool (then `confirm_playlist_draft`); the public preview tools `propose_playlist`, `playlist_from_request` and `video_to_playlist`, and its `max_videos` parameter, were removed in favour of `video_count` + `count_mode`.
+
+Local testing: run the server locally and open `http://localhost:8000/tester` for a form per MCP tool (built from the live tool schema) that shows results with full video metadata and logs the raw JSON-RPC response to the browser console. It is off when a public URL is configured unless `YT_ENABLE_TESTER=true`.
+
+Version 2.6.2 follows the search -> exact durations -> filter -> cap -> create -> insert workflow: the duration of every video in a proposal is re-read from `videos.list` without the cache before it is shown, and again right before the playlist is created, so a video that was trimmed, removed or mis-reported is replaced or skipped (reported in `skipped`) instead of being added. Each result's `constraint_check` names the shortest video and says whether durations were re-verified. Version 2.6.1 made `max_videos` and `min_seconds` reliable. A count or minimum length now searches YouTube by duration bucket and pages through up to 6 search requests until enough videos qualify (one page of 50 results often holds fewer than 30 videos of 5+ minutes), and limits written into the topic text ("30 videos, min 5 minutes") are applied and reported in `limits_inferred_from_topic`. Parsing of "minimum 5 minutes", "30-video playlist" and similar phrasings was fixed. Limits are verified before a draft is shown and again before any YouTube write, and unknown tool parameters are rejected instead of ignored. Check `/health` reports `2.6.2` after deploying; a client that cached an older tool list should reconnect the connector. Version 2.5.0 added AI-mediated confirmation (confirm_playlist_draft after user agreement in chat), modern button-based browser fallback, and leaves quota/rate enforcement entirely to Google. Follow [the 2.4.0 upgrade and reconnect steps](docs/UPGRADE_2_4_0.md) then update your client.
 
 Start with [Render + Neon deployment](docs/DEPLOY_RENDER.md). The hosted MCP URL is **`https://<host>/mcp/`**. In Claude choose **Streamable HTTP**, **Sign In Now** and **Register Automatically**. Use the plain URL with its trailing slash; no static bearer key, query key or custom header is needed. Choose Sign In Now to grant permissions during setup. Public tools still support anonymous access; Sign In When Needed defers this same sign-in until protected work.
 
@@ -11,27 +15,29 @@ The handoff contains `.env.example`, never a configured `.env`. Keep secrets in 
 ## Use it
 
 1. Ask for videos similar to a YouTube URL or channels similar to an `@handle`. Public results use public metadata and are not personalized.
-2. Ask for a constrained playlist preview, specifying topic and any optional length, count and language preferences. Public previews are stateless. The AI passes these as optional tool parameters (omit any for no bound):
+2. Sign in and ask for a playlist, giving a topic and any optional length, count and language preferences. `create_playlist_draft` is the only tool that builds a playlist; the AI passes these as optional tool parameters (omit any for no bound):
 
    | Parameter | Meaning |
    |---|---|
    | `total_seconds` | Maximum combined playlist length, e.g. `7200` for 2 hours |
    | `max_seconds` | Maximum length of any single video, e.g. `1200` for 20 minutes |
    | `min_seconds` | Minimum length of every video, e.g. `300` for 5 minutes (cannot exceed `max_seconds`) |
-   | `max_videos` | Maximum number of videos, 1 to 50. The server searches up to 6 YouTube result pages to find that many (about 600 search quota units for one proposal) |
+   | `video_count` + `count_mode` | Number of videos, 1 to 50. `count_mode` is `exactly` (default: exactly that many, or error `not_enough_videos`, never more), `at_least` (that many or more, up to 50) or `at_most` (up to that many). A count or minimum length searches up to 6 YouTube result pages (about 600 search quota units for one draft) |
    | `language` | Language code such as `en` |
 
-   The most relevant matching videos are kept. If fewer than `max_videos` match, the result includes `video_count_note`. Every proposal and draft also returns `constraint_check` (count, shortest and longest video, `all_satisfied`).
+   | `exclude_saved` | Skip videos you have already liked or saved (default `true`) |
+
+   The most relevant matching videos are kept. With `count_mode: at_most`, a shorter result includes `video_count_note`. Every draft also returns `constraint_check` (count, shortest and longest video, `count_satisfied`, `all_satisfied`).
 3. For recommendations or account analysis, sign in with Google during connector setup (or when first prompted by a client using lazy sign-in). Initial Google consent requests OpenID identity plus YouTube read and write access.
-4. To save a playlist, create a signed-in draft. Your AI shows the exact ordered videos in the conversation. After you agree, the AI calls confirm_playlist_draft. An optional modern browser page with a confirm button is also available. Initial sign-in requests playlist-write permission.
+4. Your AI shows the exact ordered videos in the conversation. After you agree, the AI calls confirm_playlist_draft. An optional modern browser page with a confirm button is also available. Initial sign-in requests playlist-write permission.
 5. Read `playlist_status` after approval. A known partial failure can be explicitly resumed; an uncertain outcome requires manual inspection of YouTube and never auto-retries.
 
 Each Google subject has separate tokens, refreshes, profile caches, drafts, quota and approvals. Another user's connection or disconnect does not select your account or authorize your writes. The operator does not provide a shared Google account.
 
 | MCP access | Tools |
 |---|---|
-| Public | `similar_videos`, `similar_channels`, `video_summary`, `propose_playlist`, `playlist_from_request`, `video_to_playlist` |
-| Sign-in required | `recommendations`, `engagement_analysis`, `create_playlist_draft`, `playlist_status`, `disconnect` |
+| Public | `similar_videos`, `similar_channels`, `video_summary` |
+| Sign-in required | `recommendations`, `engagement_analysis`, `create_playlist_draft`, `confirm_playlist_draft`, `playlist_status`, `disconnect` |
 
 The server uses the official MCP Python SDK 1.30 authorization provider/routes with dynamic client registration. Its MCP scope `youtube:read` is separate from Google scopes. Playlist write consent is `https://www.googleapis.com/auth/youtube` and is requested during initial Google sign-in. Tools cannot approve writes.
 

@@ -5,7 +5,6 @@ from ytintel.domain import (
     Video,
     analyse,
     duration,
-    parse_request,
     rank,
     select,
     video_id,
@@ -82,11 +81,16 @@ def test_selection_strict_and_deduplicated():
     assert sum(v.seconds for v in picked) == 900
 
 
-def test_parser():
-    c = parse_request("Build a 2 hour playlist on Python, no video over 20 minutes, language en")
-    assert c.total_seconds == 7200 and c.max_seconds == 1200 and c.language == "en"
-    with pytest.raises(ValueError):
-        parse_request("something vague")
+def test_limits_written_in_the_topic_are_parsed():
+    from ytintel.domain import limits_from_text
+
+    limits, topic = limits_from_text("Python, 2 hour playlist, no video over 20 minutes")
+    assert limits["total_seconds"] == 7200 and limits["max_seconds"] == 1200
+    assert topic == "Python"
+    assert limits_from_text("something vague") == (
+        {k: None for k in limits},
+        "something vague",
+    )
 
 
 def test_analysis_dated_activity_not_publication():

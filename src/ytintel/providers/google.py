@@ -14,6 +14,8 @@ from ..quota import active_ticket
 from ..tenancy import PublicStore
 
 BASE = "https://www.googleapis.com/youtube/v3/"
+# A playlist this server creates holds at most 50 videos; two pages leave headroom to see extras.
+MAX_READBACK_PAGES = 2
 
 
 class GoogleProvider:
@@ -375,6 +377,24 @@ class GoogleProvider:
             },
         )
         return data["id"]
+
+    async def playlist_video_ids(self, playlist_id):
+        """playlistItems.list read-back of a playlist, uncached, so the real item count is known."""
+        ids, token = [], None
+        for _ in range(MAX_READBACK_PAGES):
+            params = {"part": "contentDetails", "playlistId": playlist_id, "maxResults": 50}
+            if token:
+                params["pageToken"] = token
+            data = await self.request("playlistItems", params, fresh=True)
+            ids.extend(
+                x["contentDetails"]["videoId"]
+                for x in data.get("items", [])
+                if x.get("contentDetails", {}).get("videoId")
+            )
+            token = data.get("nextPageToken")
+            if not token:
+                break
+        return ids
 
     async def add_video(self, playlist_id, video_id):
         await self.request(

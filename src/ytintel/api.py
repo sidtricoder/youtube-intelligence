@@ -2,10 +2,9 @@
 
 from fastapi import Request
 
-from .domain import Constraints, parse_request
+from .domain import Constraints
 from .errors import AppError
 from .http_gate import MCPGate, client_address
-from .mcp_server import PUBLIC_NOTICE
 from .policy import MCP_SCOPE
 
 
@@ -49,10 +48,6 @@ def install_api_routes(app, *, auth, issuer, s, credentials, context_factory, se
     async def similar_channels(request: Request, channel: str):
         return await (await rest_service(request)).similar_channels(channel)
 
-    @app.post("/api/preview")
-    async def preview(request: Request, constraints: Constraints):
-        return {**await (await rest_service(request)).preview(constraints), "notice": PUBLIC_NOTICE}
-
     @app.get("/api/recommendations")
     async def recommendations(request: Request):
         return await (await rest_service(request, True)).recommend()
@@ -73,13 +68,6 @@ def install_api_routes(app, *, auth, issuer, s, credentials, context_factory, se
     @app.post("/api/drafts")
     async def create_draft(request: Request, constraints: Constraints):
         return await (await rest_service(request, True)).propose(constraints)
-
-    @app.post("/api/drafts/from-request")
-    async def create_from_request(request: Request):
-        body = await request.json()
-        return await (await rest_service(request, True)).propose(
-            parse_request(body.get("request", ""))
-        )
 
     @app.get("/api/drafts/{ident}")
     async def draft_status(request: Request, ident: str):

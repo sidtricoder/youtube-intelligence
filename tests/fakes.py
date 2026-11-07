@@ -81,6 +81,9 @@ class FixtureProvider:
         self.created.append({"id": playlist, "title": title})
         return playlist
 
+    async def playlist_video_ids(self, playlist_id):
+        return [v for p, v in self.inserted if p == playlist_id]
+
     async def add_video(self, playlist_id, video_id):
         if not any(x["id"] == playlist_id for x in self.created):
             raise AppError("not_found", "Fixture playlist missing", 404)

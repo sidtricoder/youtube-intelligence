@@ -160,12 +160,11 @@ def test_malformed_non_ascii_credential_returns_unauthorized(client):
     assert client.get("/api/quota", headers=[(b"authorization", b"Bearer \xe9")]).status_code == 401
 
 
-def test_public_preview_is_stateless_and_cannot_be_approved(client):
-    response = client.post(
-        "/api/preview", json={"topic": "Python", "total_seconds": 1800, "max_seconds": 900}
-    )
-    assert response.status_code == 200
-    assert response.json()["videos"] and "id" not in response.json()
+def test_playlists_are_built_only_through_signed_in_drafts(client):
+    body = {"topic": "Python", "total_seconds": 1800, "max_seconds": 900}
+    assert client.post("/api/preview", json=body).status_code in (404, 405)
+    gone = client.post("/api/drafts/from-request", json={"request": "x"})
+    assert gone.status_code in (401, 404, 405)
     assert (
         client.post(
             "/api/drafts", json={"topic": "Python", "total_seconds": 1800, "max_seconds": 900}

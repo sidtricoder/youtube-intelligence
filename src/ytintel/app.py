@@ -1,7 +1,10 @@
 """Composition root. MCP bearer authority and browser approval authority stay separate."""
 
+import json
 import logging
+import secrets
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI
@@ -141,6 +144,26 @@ def create_app(
     @app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
     async def home():
         return ui.home_page(issuer)
+
+    if s.tester_enabled:
+        tester_html = (Path(__file__).parent / "tester.html").read_text(encoding="utf-8")
+
+        @app.get("/tester", response_class=HTMLResponse, include_in_schema=False)
+        async def tester():
+            """Local MCP tester: a form per tool, built from the live tools/list schema."""
+            nonce = secrets.token_urlsafe(24)
+            return HTMLResponse(
+                tester_html.replace("__NONCE__", nonce).replace(
+                    "__RESOURCE__", json.dumps(auth.resource)
+                ),
+                headers={
+                    "Content-Security-Policy": "default-src 'none'; script-src 'nonce-"
+                    + nonce
+                    + "'; connect-src 'self'; style-src 'unsafe-inline'; "
+                    "img-src https://i.ytimg.com; form-action 'none'; "
+                    "frame-ancestors 'none'; base-uri 'none'"
+                },
+            )
 
     install_oauth_routes(app, auth, issuer)
 

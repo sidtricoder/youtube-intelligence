@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MCP Tool Tester</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; max-width: 1400px; }
+  fieldset { margin-bottom: 12px; }
+  label { display: block; margin: 8px 0 2px; font-weight: 600; }
+  .desc { font-weight: normal; color: #555; font-size: 0.85em; margin: 0 0 2px; }
+  input[type=text], input[type=number], select, textarea { width: 100%; max-width: 600px; box-sizing: border-box; }
+  table { border-collapse: collapse; margin: 8px 0 16px; font-size: 0.9em; }
+  th, td { border: 1px solid #ccc; padding: 4px 6px; vertical-align: top; text-align: left; }
+  th { background: #f2f2f2; }
+  pre { background: #f6f6f6; padding: 8px; overflow: auto; max-height: 600px; }
+  .error { color: #a00; font-weight: 600; }
+  .ok { color: #070; font-weight: 600; }
+  img { width: 120px; }
+  .desc-cell { max-width: 320px; }
+</style>
+</head>
+<body>
+<h1>MCP Tool Tester</h1>
+<p>Local test page. Calls this server's MCP endpoint (<code>/mcp/</code>) with exactly the parameters an AI client can send.
+The raw JSON-RPC response of every call is also printed to the browser console (F12).</p>
+
+<fieldset>
+  <legend>Connection</legend>
+  <label for="token">Bearer token <span class="desc">(optional; only needed for sign-in tools such as create_playlist_draft)</span></label>
+  <input type="text" id="token" autocomplete="off" placeholder="leave empty for public tools">
+  <p>
+    <button type="button" id="signin">Sign in with Google</button>
+    <button type="button" id="signout">Clear token</button>
+    <span id="auth-status" class="desc"></span>
+  </p>
+  <p class="desc">Sign-in runs the same OAuth flow an AI client uses: Google sign-in, then "Allow this client", then you come back here with the token filled in.</p>
+  <label for="tool">Tool</label>
+  <select id="tool"></select>
+  <p class="desc" id="tool-desc"></p>
+</fieldset>
+
+<form id="form">
+  <fieldset>
+    <legend>Parameters</legend>
+    <div id="fields">Loading tools…</div>
+  </fieldset>
+  <button type="submit">Call tool</button>
+  <span id="status"></span>
+</form>
+
+<h2>Request</h2>
+<pre id="request"></pre>
+<h2>Result</h2>
+<div id="result"></div>
+
+<script nonce="__NONCE__">
+"use strict";
+let tools = [];
+const RESOURCE = __RESOURCE__;
+const REDIRECT_URI = location.origin + "/tester";
+const store = {
+  get(k) { try { return sessionStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { sessionStorage.setItem(k, v); } catch { /* storage unavailable */ } },
+  del(k) { try { sessionStorage.removeItem(k); } catch { /* storage unavailable */ } },
+};
+let rpcId = 0;
+const $ = (id) => document.getElementById(id);
+
+function el(tag, attrs, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs || {})) {
+    if (value === undefined || value === null) continue;
+    if (key === "text") node.textContent = value;
+    else node.setAttribute(key, value);
+  }
+  for (const child of children) {
+    if (child === null || child === undefined) continue;
+    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return node;
+}
+
+async function rpc(method, params) {
+  const headers = {
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/event-stream",
+  };
+  const token = $("token").value.trim();
+  if (token) headers["Authorization"] = "Bearer " + token;
+  const body = { jsonrpc: "2.0", id: ++rpcId, method, ...(params ? { params } : {}) };
+  const response = await fetch("/mcp/", { method: "POST", headers, body: JSON.stringify(body) });
+  const text = await response.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    // Server-sent events fallback: take the last data: line.
+    const lines = text.split("\n").filter((l) => l.startsWith("data:"));
+    data = lines.length ? JSON.parse(lines[lines.length - 1].slice(5)) : { httpStatus: response.status, body: text };
+  }
+  return { status: response.status, data };
+}
+
+// Unwrap {anyOf: [{type: X}, {type: "null"}]} into the real schema.
+function base(schema) {
+  if (schema.anyOf) {
+    const real = schema.anyOf.find((s) => s.type !== "null");
+    return { ...schema, ...real, nullable: true };
+  }
+  return schema;
+}
+
+function renderFields() {
+  const tool = tools.find((t) => t.name === $("tool").value);
+  const box = $("fields");
+  box.replaceChildren();
+  $("tool-desc").textContent = tool ? tool.description || "" : "";
+  if (!tool) return;
+  const props = tool.inputSchema.properties || {};
+  const required = new Set(tool.inputSchema.required || []);
+  if (!Object.keys(props).length) box.append(el("p", { text: "This tool takes no parameters." }));
+  for (const [name, raw] of Object.entries(props)) {
+    const schema = base(raw);
+    const id = "f_" + name;
+    const limits = [
+      schema.type,
+      schema.minimum !== undefined ? "min " + schema.minimum : null,
+      schema.exclusiveMinimum !== undefined ? "> " + schema.exclusiveMinimum : null,
+      schema.maximum !== undefined ? "max " + schema.maximum : null,
+      schema.minLength !== undefined ? "length " + schema.minLength + "-" + (schema.maxLength ?? "") : null,
+      schema.pattern ? "pattern " + schema.pattern : null,
+      required.has(name) ? "required" : "optional",
+    ].filter(Boolean).join(", ");
+    box.append(el("label", { for: id }, name + " ", el("span", { class: "desc", text: "(" + limits + ")" })));
+    if (schema.description) box.append(el("p", { class: "desc", text: schema.description }));
+    let input;
+    if (schema.enum) {
+      input = el("select", { id, "data-name": name, "data-type": "enum" }, el("option", { value: "", text: "(omit)" }));
+      for (const option of schema.enum) input.append(el("option", { value: option, text: option }));
+    } else if (schema.type === "boolean") {
+      input = el("select", { id, "data-name": name, "data-type": "boolean" },
+        el("option", { value: "", text: "(omit: default " + JSON.stringify(raw.default) + ")" }),
+        el("option", { value: "true", text: "true" }),
+        el("option", { value: "false", text: "false" }));
+    } else if (schema.type === "integer" || schema.type === "number") {
+      input = el("input", { id, type: "number", step: schema.type === "integer" ? "1" : "any", "data-name": name, "data-type": schema.type, placeholder: "(omit)" });
+    } else {
+      input = el("input", { id, type: "text", "data-name": name, "data-type": "string", placeholder: required.has(name) ? "" : "(omit)" });
+    }
+    box.append(input);
+  }
+}
+
+function collectArguments() {
+  const args = {};
+  for (const input of $("fields").querySelectorAll("[data-name]")) {
+    const value = input.value.trim();
+    if (value === "") continue; // empty means "omit", exactly like an AI leaving it out
+    const type = input.dataset.type;
+    if (type === "integer") args[input.dataset.name] = parseInt(value, 10);
+    else if (type === "number") args[input.dataset.name] = Number(value);
+    else if (type === "boolean") args[input.dataset.name] = value === "true";
+    else args[input.dataset.name] = value;
+  }
+  return args;
+}
+
+function toolPayload(data) {
+  const result = data && data.result;
+  if (!result) return data;
+  const textBlock = (result.content || []).find((b) => b.type === "text");
+  if (textBlock) {
+    try { return JSON.parse(textBlock.text); } catch { return textBlock.text; }
+  }
+  return result.structuredContent ?? result;
+}
+
+function duration(seconds) {
+  if (typeof seconds !== "number") return "";
+  const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), s = seconds % 60;
+  return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(s).padStart(2, "0");
+}
+
+function isVideo(x) {
+  return x && typeof x === "object" && typeof x.id === "string" && "seconds" in x && "title" in x;
+}
+
+// Find every list of videos in the result, e.g. videos, preview.videos, similar[].video.
+function videoLists(value, path, found) {
+  if (Array.isArray(value)) {
+    const rows = value.map((item) => (isVideo(item) ? { video: item } : item && isVideo(item.video) ? item : null));
+    if (value.length && rows.every(Boolean)) found.push({ path, rows });
+    else value.forEach((item, i) => videoLists(item, path + "[" + i + "]", found));
+  } else if (value && typeof value === "object") {
+    for (const [key, child] of Object.entries(value)) videoLists(child, path ? path + "." + key : key, found);
+  }
+  return found;
+}
+
+function videoTable(rows) {
+  const extraKeys = [...new Set(rows.flatMap((r) => Object.keys(r).filter((k) => k !== "video")))];
+  const head = ["#", "thumbnail", "title", "channel", "duration", "seconds", "language", "category", "published_at", "tags", "description", "id", ...extraKeys];
+  const table = el("table", {}, el("tr", {}, ...head.map((h) => el("th", { text: h }))));
+  rows.forEach((row, i) => {
+    const v = row.video;
+    const url = "https://www.youtube.com/watch?v=" + encodeURIComponent(v.id);
+    table.append(el("tr", {},
+      el("td", { text: i + 1 }),
+      el("td", {}, el("img", { src: "https://i.ytimg.com/vi/" + encodeURIComponent(v.id) + "/mqdefault.jpg", alt: "" })),
+      el("td", {}, el("a", { href: url, target: "_blank", rel: "noopener noreferrer", text: v.title })),
+      el("td", { text: (v.channel_title || "") + (v.channel_id ? " (" + v.channel_id + ")" : "") }),
+      el("td", { text: duration(v.seconds) }),
+      el("td", { text: v.seconds }),
+      el("td", { text: v.language ?? "" }),
+      el("td", { text: v.category ?? "" }),
+      el("td", { text: v.published_at ?? "" }),
+      el("td", { text: (v.tags || []).join(", ") }),
+      el("td", { class: "desc-cell", title: v.description || "", text: (v.description || "").slice(0, 200) }),
+      el("td", { text: v.id }),
+      ...extraKeys.map((k) => el("td", { text: typeof row[k] === "object" ? JSON.stringify(row[k]) : row[k] ?? "" })),
+    ));
+  });
+  return table;
+}
+
+function keyValueTable(object) {
+  const table = el("table", {}, el("tr", {}, el("th", { text: "field" }), el("th", { text: "value" })));
+  for (const [key, value] of Object.entries(object)) {
+    const shown = value !== null && typeof value === "object" ? el("pre", { text: JSON.stringify(value, null, 2) }) : String(value);
+    table.append(el("tr", {}, el("td", { text: key }), el("td", {}, shown)));
+  }
+  return table;
+}
+
+function renderResult(payload, ms, httpStatus) {
+  const out = $("result");
+  out.replaceChildren();
+  const error = payload && payload.error;
+  out.append(el("p", { class: error ? "error" : "ok", text: (error ? "Error" : "OK") + " — HTTP " + httpStatus + ", " + ms + " ms" }));
+  if (error) out.append(keyValueTable(error));
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    const checks = [["constraint_check", payload.constraint_check], ["preview.constraint_check", payload.preview && payload.preview.constraint_check], ["constraints", payload.constraints || (payload.preview && payload.preview.constraints)]];
+    for (const [title, value] of checks) {
+      if (value) out.append(el("h3", { text: title }), keyValueTable(value));
+    }
+  }
+  for (const list of videoLists(payload, "", [])) {
+    out.append(el("h3", { text: list.path + " — " + list.rows.length + " videos" }), videoTable(list.rows));
+  }
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    out.append(el("h3", { text: "All top-level fields" }), keyValueTable(payload));
+  }
+  out.append(el("h3", { text: "Raw tool result (JSON)" }), el("pre", { text: JSON.stringify(payload, null, 2) }));
+}
+
+$("form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const name = $("tool").value;
+  const params = { name, arguments: collectArguments() };
+  $("request").textContent = JSON.stringify({ method: "tools/call", params }, null, 2);
+  $("status").textContent = "Calling…";
+  const started = performance.now();
+  try {
+    const { status, data } = await rpc("tools/call", params);
+    const ms = Math.round(performance.now() - started);
+    const payload = toolPayload(data);
+    console.log("[MCP tester] raw JSON-RPC response for " + name + ":", data);
+    console.log("[MCP tester] raw JSON-RPC response text:\n" + JSON.stringify(data, null, 2));
+    console.log("[MCP tester] parsed tool result:", payload);
+    renderResult(payload, ms, status);
+    $("status").textContent = "";
+  } catch (err) {
+    console.error("[MCP tester] call failed", err);
+    $("status").textContent = "Request failed: " + err;
+  }
+});
+
+$("tool").addEventListener("change", renderFields);
+
+function randomString(bytes) {
+  const data = crypto.getRandomValues(new Uint8Array(bytes));
+  return btoa(String.fromCharCode(...data)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function pkceChallenge(verifier) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  return btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// Step 1: register this page as an OAuth client and send the browser to /authorize.
+$("signin").addEventListener("click", async () => {
+  $("auth-status").textContent = "Registering client…";
+  const registration = await fetch("/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      client_name: "Local MCP tester",
+      redirect_uris: [REDIRECT_URI],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none",
+      scope: "youtube:read",
+    }),
+  });
+  const client = await registration.json();
+  console.log("[MCP tester] /register:", registration.status, client);
+  if (!registration.ok) {
+    $("auth-status").textContent = "Registration failed: " + JSON.stringify(client);
+    return;
+  }
+  const verifier = randomString(48);
+  const state = randomString(16);
+  store.set("oauth_client_id", client.client_id);
+  store.set("oauth_verifier", verifier);
+  store.set("oauth_state", state);
+  const params = new URLSearchParams({
+    client_id: client.client_id,
+    redirect_uri: REDIRECT_URI,
+    response_type: "code",
+    scope: "youtube:read",
+    state,
+    code_challenge: await pkceChallenge(verifier),
+    code_challenge_method: "S256",
+    resource: RESOURCE,
+  });
+  location.assign("/authorize?" + params);
+});
+
+// Step 2: back on /tester?code=...&state=..., exchange the code for an access token.
+async function finishSignIn() {
+  const query = new URLSearchParams(location.search);
+  if (query.get("error")) {
+    $("auth-status").textContent = "Sign-in failed: " + query.get("error") + " " + (query.get("error_description") || "");
+    history.replaceState(null, "", "/tester");
+    return;
+  }
+  if (!query.get("code")) return;
+  history.replaceState(null, "", "/tester");
+  if (query.get("state") !== store.get("oauth_state")) {
+    $("auth-status").textContent = "Sign-in failed: state mismatch. Try again.";
+    return;
+  }
+  const response = await fetch("/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: store.get("oauth_client_id"),
+      code: query.get("code"),
+      redirect_uri: REDIRECT_URI,
+      code_verifier: store.get("oauth_verifier"),
+      resource: RESOURCE,
+    }),
+  });
+  const token = await response.json();
+  console.log("[MCP tester] /token:", response.status, { ...token, access_token: token.access_token ? "<hidden>" : undefined, refresh_token: token.refresh_token ? "<hidden>" : undefined });
+  store.del("oauth_verifier");
+  store.del("oauth_state");
+  if (!response.ok || !token.access_token) {
+    $("auth-status").textContent = "Token exchange failed: " + JSON.stringify(token);
+    return;
+  }
+  store.set("oauth_access_token", token.access_token);
+  $("token").value = token.access_token;
+  $("auth-status").textContent = "Signed in. Token valid for about " + Math.round((token.expires_in || 0) / 60) + " minutes.";
+}
+
+$("signout").addEventListener("click", () => {
+  store.del("oauth_access_token");
+  $("token").value = "";
+  $("auth-status").textContent = "Token cleared.";
+});
+
+$("token").value = store.get("oauth_access_token") || "";
+if ($("token").value) $("auth-status").textContent = "Using the token from this tab's earlier sign-in.";
+finishSignIn().catch((err) => { $("auth-status").textContent = "Sign-in failed: " + err; });
+
+(async () => {
+  try {
+    const { data } = await rpc("tools/list");
+    console.log("[MCP tester] tools/list:", data);
+    tools = (data.result && data.result.tools) || [];
+    for (const tool of tools) $("tool").append(el("option", { value: tool.name, text: tool.name }));
+    const preferred = tools.find((t) => t.name === "create_playlist_draft");
+    if (preferred) $("tool").value = preferred.name;
+    renderFields();
+  } catch (err) {
+    $("fields").textContent = "Could not load tools from /mcp/: " + err;
+  }
+})();
+</script>
+</body>
+</html>

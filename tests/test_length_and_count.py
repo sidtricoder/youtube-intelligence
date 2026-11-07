@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from tests.fakes import FixtureProvider
 from tests.test_domain import video
-from tests.wire_helpers import call, mcp_session, running_server
+from tests.wire_helpers import call, login, mcp_session, running_server
 from ytintel.app import create_app
 from ytintel.config import Settings
 from ytintel.domain import (
@@ -16,7 +16,6 @@ from ytintel.domain import (
     constraint_check,
     duration_buckets,
     limits_from_text,
-    parse_request,
     select,
     violations,
 )
@@ -80,68 +79,72 @@ def test_equal_min_and_max_seconds_is_allowed():
     assert Constraints(topic="Python", min_seconds=600, max_seconds=600).min_seconds == 600
 
 
-def test_natural_language_request_reads_count_and_length_range():
-    c = parse_request(
-        "Build a 2 hour playlist on Python, 8 videos, no video over 20 minutes, "
-        "at least 5 minutes, language en"
+def test_topic_text_reads_count_and_length_range():
+    c, _ = limits_from_text(
+        "Build a 2 hour playlist on Python, 8 videos, no video over 20 minutes, at least 5 minutes"
     )
-    assert c.max_videos == 8
-    assert (c.min_seconds, c.max_seconds, c.total_seconds) == (300, 1200, 7200)
+    assert c["max_videos"] == 8
+    assert (c["min_seconds"], c["max_seconds"], c["total_seconds"]) == (300, 1200, 7200)
 
 
 def test_no_video_under_is_a_minimum_not_a_maximum():
-    c = parse_request("Build a playlist on Python, no video under 5 minutes")
-    assert c.min_seconds == 300 and c.max_seconds is None
-    c = parse_request("Build a playlist on Python, under 10 minutes")
-    assert c.max_seconds == 600 and c.min_seconds is None
+    c, _ = limits_from_text("Build a playlist on Python, no video under 5 minutes")
+    assert c["min_seconds"] == 300 and c["max_seconds"] is None
+    c, _ = limits_from_text("Build a playlist on Python, under 10 minutes")
+    assert c["max_seconds"] == 600 and c["min_seconds"] is None
 
 
 async def test_mcp_tools_expose_optional_count_and_length_parameters():
     from ytintel.mcp_server import build_mcp
 
     for tool in await build_mcp(lambda _: None).list_tools():
-        if tool.name in {"propose_playlist", "video_to_playlist", "create_playlist_draft"}:
+        if tool.name == "create_playlist_draft":
             props = tool.inputSchema["properties"]
             required = tool.inputSchema.get("required", [])
-            for name in ("total_seconds", "max_seconds", "min_seconds", "max_videos"):
+            for name in ("total_seconds", "max_seconds", "min_seconds", "video_count"):
                 assert name in props and name not in required
-            assert props["max_videos"]["description"]
+            assert "max_videos" not in props
             assert "single video" in props["max_seconds"]["description"]
             assert "combined playlist" in props["total_seconds"]["description"]
 
 
+async def signed_in(wire):
+    async with httpx.AsyncClient(base_url=wire.origin, trust_env=False) as browser:
+        return (await login(wire, browser, "alice"))["access_token"]
+
+
 async def test_ai_client_limits_video_count_and_length_over_real_mcp(tmp_path):
     with running_server(tmp_path) as wire:
-        async with mcp_session(wire) as session:
-            result = await call(
-                session,
-                "propose_playlist",
-                {"topic": "Python", "max_videos": 3, "min_seconds": 500, "max_seconds": 1000},
+        async with mcp_session(wire, await signed_in(wire)) as session:
+
+            async def draft(**arguments):
+                return await call(
+                    session,
+                    "create_playlist_draft",
+                    {"topic": "Python", "exclude_saved": False, **arguments},
+                )
+
+            result = await draft(
+                video_count=3, count_mode="at_most", min_seconds=500, max_seconds=1000
             )
             assert 0 < len(result["videos"]) <= 3
             assert all(500 <= v["seconds"] <= 1000 for v in result["videos"])
             assert result["constraints"]["max_videos"] == 3
             assert result["constraints"]["min_seconds"] == 500
 
-            short = await call(
-                session,
-                "propose_playlist",
-                {"topic": "Python", "max_videos": 50, "max_seconds": 700},
-            )
+            short = await draft(video_count=50, count_mode="at_most", max_seconds=700)
             assert len(short["videos"]) < 50
             assert "video_count_note" in short
 
-            full = await call(session, "propose_playlist", {"topic": "Python", "max_videos": 2})
+            full = await draft(video_count=2)
             assert len(full["videos"]) == 2 and "video_count_note" not in full
 
             for bad in (
-                {"max_videos": 0},
-                {"max_videos": 51},
+                {"video_count": 0},
+                {"video_count": 51},
                 {"min_seconds": 900, "max_seconds": 600},
             ):
-                error = (await call(session, "propose_playlist", {"topic": "Python", **bad}))[
-                    "error"
-                ]
+                error = (await draft(**bad))["error"]
                 assert error["code"] == "invalid_input"
                 assert error["fields"]
 
@@ -215,19 +218,12 @@ async def test_draft_that_breaks_its_limits_is_never_written_to_youtube(app_and_
 
 async def test_unsupported_parameter_is_rejected_instead_of_silently_ignored(tmp_path):
     with running_server(tmp_path) as wire:
-        async with mcp_session(wire) as session:
-            for tool, extra in (
-                ("propose_playlist", {"max_results": 30}),
-                ("propose_playlist", {"min_minutes": 5}),
-                ("video_to_playlist", {"max_video": 30}),
-            ):
-                base = {"topic": "Python"}
-                if tool == "video_to_playlist":
-                    base["video"] = "dQw4w9WgXcQ"
-                result = await call(session, tool, {**base, **extra})
+        async with mcp_session(wire, await signed_in(wire)) as session:
+            for extra in ({"max_results": 30}, {"min_minutes": 5}, {"max_videos": 30}):
+                result = await call(session, "create_playlist_draft", {"topic": "Python", **extra})
                 assert result["error"]["code"] == "unknown_parameter"
                 assert set(result["error"]["fields"]) == set(extra)
-                assert "max_videos" in result["error"]["message"]
+                assert "video_count" in result["error"]["message"]
         assert wire.providers == {}, "a rejected call must not touch the provider"
 
 
@@ -271,13 +267,15 @@ def test_duration_buckets_follow_the_length_range():
 
 def test_limits_written_into_the_topic_fill_gaps_but_never_override_parameters():
     c, inferred = build_constraints(
-        "Python, 30 videos, min video length 5 minutes", None, None, None, None, None
+        "Python, 30 videos, min video length 5 minutes", None, None, None, None
     )
     assert (c.topic, c.max_videos, c.min_seconds) == ("Python", 30, 300)
     assert inferred == {"min_seconds": 300, "max_videos": 30}
-    c, inferred = build_constraints("Python, 30 videos", None, None, 600, 10, "en")
+    c, inferred = build_constraints(
+        "Python, 30 videos", None, None, 600, "en", video_count=10, count_mode="at_most"
+    )
     assert (c.max_videos, c.min_seconds, c.language) == (10, 600, "en") and inferred == {}
-    c, inferred = build_constraints("Python basics", None, None, None, None, None)
+    c, inferred = build_constraints("Python basics", None, None, None, None)
     assert c.topic == "Python basics" and inferred == {}
 
 
@@ -507,17 +505,6 @@ async def test_nothing_is_written_when_no_drafted_video_still_fits(deep_service)
         await service.approve(draft["id"], "CREATE")
     assert caught.value.code == "no_matches"
     assert not provider.created and not provider.inserted
-
-
-async def test_similar_videos_are_labelled_as_unfiltered_suggestions(deep_service):
-    service = await deep_service(FixtureProvider())
-    result = await service.video_to_playlist(
-        "aaaaaaaaaaa", Constraints(topic="Python", min_seconds=650)
-    )
-    assert all(v["seconds"] >= 650 for v in result["preview"]["videos"])
-    assert "not filtered" in result["similar_note"]
-    assert {x["meets_limits"] for x in result["similar"]} == {True, False}
-    assert all(x["meets_limits"] == (x["video"]["seconds"] >= 650) for x in result["similar"])
 
 
 async def test_fresh_videos_bypasses_the_response_cache(tmp_path):

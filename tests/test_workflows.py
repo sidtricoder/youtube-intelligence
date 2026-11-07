@@ -113,11 +113,10 @@ async def test_personalized_discovery_is_not_rejected_by_former_reservation(serv
     assert not service.provider.created
 
 
-async def test_unfiltered_draft_and_stateless_preview_never_read_profile(service):
+async def test_unfiltered_draft_never_reads_profile(service):
     async def forbidden(*args):
-        pytest.fail("public preview or unfiltered draft read private profile")
+        pytest.fail("unfiltered draft read private profile")
 
     service.provider.profile = forbidden
     constraints = Constraints(topic="Python", total_seconds=1800, max_seconds=1200)
     assert (await service.propose(constraints, exclude_saved=False))["videos"]
-    assert (await service.preview(constraints))["videos"]

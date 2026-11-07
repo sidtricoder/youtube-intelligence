@@ -195,6 +195,6 @@ async def test_official_mcp_client_oauth_bearer_lists_account_tools(server):
         async with ClientSession(read, write) as session:
             await session.initialize()
             tools = {tool.name for tool in (await session.list_tools()).tools}
-            assert {"similar_videos", "propose_playlist", "playlist_status"} <= tools
+            assert {"similar_videos", "video_summary", "playlist_status"} <= tools
             assert not any("approve" in name for name in tools)
             assert "create_playlist_draft" in tools

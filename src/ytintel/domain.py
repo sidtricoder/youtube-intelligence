@@ -36,7 +36,10 @@ class Constraints(BaseModel):
     total_seconds: int | None = Field(default=None, gt=0, strict=True)
     max_seconds: int | None = Field(default=None, gt=0, strict=True)
     min_seconds: int | None = Field(default=None, gt=0, strict=True)
+    # max_videos is a hard ceiling (never exceeded); min_videos a floor (fewer is an error).
+    # "exactly N" is min_videos == max_videos == N.
     max_videos: int | None = Field(default=None, ge=1, le=MAX_VIDEOS_LIMIT, strict=True)
+    min_videos: int | None = Field(default=None, ge=1, le=MAX_VIDEOS_LIMIT, strict=True)
     language: str | None = Field(default=None, pattern=r"^[a-z]{2,3}(-[A-Za-z]{2,4})?$")
 
     @model_validator(mode="after")
@@ -47,7 +50,39 @@ class Constraints(BaseModel):
             and self.min_seconds > self.max_seconds
         ):
             raise ValueError("min_seconds cannot exceed max_seconds")
+        if (
+            self.min_videos is not None
+            and self.max_videos is not None
+            and self.min_videos > self.max_videos
+        ):
+            raise ValueError("min_videos cannot exceed max_videos")
         return self
+
+    def count_mode(self) -> str | None:
+        if self.min_videos is None and self.max_videos is None:
+            return None
+        if self.min_videos == self.max_videos:
+            return "exactly"
+        if self.min_videos is None:
+            return "at_most"
+        return "at_least" if self.max_videos is None else "between"
+
+
+COUNT_MODES = ("exactly", "at_least", "at_most")
+
+
+def count_bounds(video_count, count_mode):
+    """Map an AI-facing (video_count, count_mode) pair onto (min_videos, max_videos)."""
+    if video_count is None:
+        if count_mode is not None:
+            raise ValueError("count_mode requires video_count")
+        return None, None
+    mode = count_mode or "exactly"
+    if mode not in COUNT_MODES:
+        raise ValueError("count_mode must be exactly, at_least or at_most")
+    if mode == "at_least":
+        return video_count, None
+    return (video_count if mode == "exactly" else None), video_count
 
 
 def video_id(raw: str) -> str:
@@ -162,6 +197,8 @@ def violations(videos: list[Video], c: Constraints) -> list[str]:
     problems = []
     if c.max_videos is not None and len(videos) > c.max_videos:
         problems.append(f"{len(videos)} videos exceeds max_videos={c.max_videos}")
+    if c.min_videos is not None and len(videos) < c.min_videos:
+        problems.append(f"{len(videos)} videos is fewer than min_videos={c.min_videos}")
     if len({v.id for v in videos}) != len(videos):
         problems.append("duplicate videos")
     if c.total_seconds is not None and sum(v.seconds for v in videos) > c.total_seconds:
@@ -184,6 +221,13 @@ def constraint_check(
     longest = max(videos, key=lambda v: v.seconds, default=None)
     return {
         "video_count": len(videos),
+        "requested_count": {
+            "mode": c.count_mode(),
+            "min_videos": c.min_videos,
+            "max_videos": c.max_videos,
+        },
+        "count_satisfied": (c.max_videos is None or len(videos) <= c.max_videos)
+        and (c.min_videos is None or len(videos) >= c.min_videos),
         "shortest_seconds": shortest.seconds if shortest else None,
         "shortest_video": {"id": shortest.id, "title": shortest.title, "seconds": shortest.seconds}
         if shortest
@@ -200,6 +244,30 @@ def constraint_check(
 
 _NUM = r"(\d+(?:\.\d+)?)"
 _UNIT = r"(hours?|hrs?|minutes?|mins?)"
+_NUMBER_WORDS = {
+    w: i
+    for i, w in enumerate(
+        "one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
+        "fifteen sixteen seventeen eighteen nineteen twenty".split(),
+        start=1,
+    )
+} | {"thirty": 30, "forty": 40, "fifty": 50}
+_COUNT = r"(\d{1,3}|" + "|".join(sorted(_NUMBER_WORDS, key=len, reverse=True)) + r")"
+# Up to two descriptive words between the number and "videos" ("10 python videos"),
+# but never a duration unit: "10 minute videos" is a length, not a count.
+_COUNT_TAIL = (
+    r"(?P<words>(?:[\s-]+(?!(?:hours?|hrs?|minutes?|mins?|seconds?|secs?|or)\b)"
+    r"[A-Za-z][\w+#.]*){0,2})"
+    r"[\s-]+(?:videos?|vids?)\b"
+)
+_COUNT_PATTERNS = {
+    "exact_videos": (rf"\bexactly\s+{_COUNT}{_COUNT_TAIL}",),
+    "min_videos": (
+        rf"\b(?:at least|no fewer than|no less than|min(?:imum)?(?: of)?)\s+{_COUNT}{_COUNT_TAIL}",
+        rf"\b{_COUNT}\s*(?:\+|\s+or more){_COUNT_TAIL}",
+        rf"\b{_COUNT}{_COUNT_TAIL}\s+or more\b",
+    ),
+}
 _LIMIT_PATTERNS = {
     "total_seconds": (
         rf"{_NUM}\s*{_UNIT}\s+(?:long\s+)?playlist",
@@ -217,10 +285,12 @@ _LIMIT_PATTERNS = {
         rf"{_NUM}\+\s*{_UNIT}",
     ),
     "max_videos": (
-        r"(?:\b(?:up to|at most|no more than|max(?:imum)?(?: of)?|limit(?: of)?|exactly|only)\s+)?"
-        r"\b(\d{1,3})[\s-]+videos?\b",
+        r"\b(?:up to|at most|no more than|max(?:imum)?(?: of)?|limit(?: of)?|only)\s+"
+        rf"{_COUNT}{_COUNT_TAIL}",
         r"\b(?:max(?:imum)?|number of|limit)[ _](?:of[ _])?videos?\s*[:=]?\s*(\d{1,3})\b",
-        r"\b(\d{1,3})\s+or\s+(?:fewer|less)\s+videos?\b",
+        rf"\b{_COUNT}\s+or\s+(?:fewer|less)\s+videos?\b",
+        # A bare count ("10 videos", "10 python videos") is a ceiling, as before.
+        rf"\b{_COUNT}{_COUNT_TAIL}",
     ),
 }
 
@@ -229,40 +299,62 @@ def _seconds_of(match) -> int:
     return int(float(match[1]) * (3600 if match[2].lower().startswith("h") else 60))
 
 
+def _count_of(match) -> int:
+    raw = match[1].lower()
+    return _NUMBER_WORDS[raw] if raw in _NUMBER_WORDS else int(raw)
+
+
+def _claim(match):
+    """Span to remove from the topic, keeping descriptive words such as "python" in place."""
+    words = (match.groupdict().get("words") or "").strip(" -")
+    return (*match.span(), " " + words + " " if words else "")
+
+
+def _first_free(pattern, text, spans):
+    """First match that does not overlap text already claimed by another limit."""
+    for match in re.finditer(pattern, text, re.I):
+        if all(match.end() <= a or match.start() >= b for a, b, *_ in spans):
+            return match
+    return None
+
+
+LIMIT_FIELDS = ("total_seconds", "max_seconds", "min_seconds", "max_videos", "min_videos")
+
+
 def limits_from_text(text: str) -> tuple[dict, str]:
-    """Find explicit length/count limits written in prose; return them and the text without them."""
+    """Find explicit length/count limits written in prose; return them and the text without them.
+
+    "exactly 10 videos" sets min_videos = max_videos = 10, "at least 10 videos" sets min_videos,
+    and "at most / up to / 10 videos" sets max_videos.
+    """
     found, spans = {}, []
-    for field, patterns in _LIMIT_PATTERNS.items():
+    for field, patterns in _COUNT_PATTERNS.items():
         for pattern in patterns:
-            match = re.search(pattern, text, re.I)
+            match = _first_free(pattern, text, spans)
             if match:
-                found[field] = int(match[1]) if field == "max_videos" else _seconds_of(match)
-                spans.append(match.span())
+                count = _count_of(match)
+                if field == "exact_videos":
+                    found["min_videos"] = found["max_videos"] = count
+                else:
+                    found.setdefault(field, count)
+                spans.append(_claim(match))
+                break
+    for field, patterns in _LIMIT_PATTERNS.items():
+        if field in found:
+            continue
+        for pattern in patterns:
+            match = _first_free(pattern, text, spans)
+            if match:
+                found[field] = _count_of(match) if field == "max_videos" else _seconds_of(match)
+                spans.append(_claim(match) if field == "max_videos" else (*match.span(), ""))
                 break
     remainder = text
-    for start, end in sorted(spans, reverse=True):
-        remainder = remainder[:start] + remainder[end:]
+    for start, end, keep in sorted(spans, reverse=True):
+        remainder = remainder[:start] + keep + remainder[end:]
     remainder = re.sub(r"(?:\s*[,;]\s*){2,}", ", ", remainder)
-    remainder = re.sub(r"\s+", " ", remainder).strip(" ,;:-")
-    return {f: found.get(f) for f in _LIMIT_PATTERNS}, remainder
-
-
-def parse_request(text: str) -> Constraints:
-    """Deliberately bounded English grammar; unrestricted language belongs to the MCP client."""
-    if len(text) > 1000:
-        raise ValueError("Request too long")
-    limits, _ = limits_from_text(text)
-    topic = re.search(r"\bon\s+(.+?)(?:,|;|$)", text, re.I)
-    lang = re.search(r"\blanguage\s+([a-z]{2,3}(?:-[A-Za-z]{2,4})?)\b", text, re.I)
-    if not topic or not re.search(r"\bplaylist\b", text, re.I):
-        raise ValueError(
-            "Use: Build a 2 hour playlist on Python, 8 videos, no video over 20 minutes, at least 5 minutes, language en; or send structured constraints"
-        )
-    return Constraints(
-        topic=topic[1].strip(),
-        language=lang[1].lower() if lang else None,
-        **limits,
-    )
+    remainder = re.sub(r"\s+", " ", remainder)
+    remainder = re.sub(r"\s+([,;])", r"\1", remainder).strip(" ,;:-")
+    return {f: found.get(f) for f in LIMIT_FIELDS}, remainder
 
 
 # YouTube search can filter by duration: short < 4 min, medium 4-20 min, long > 20 min.

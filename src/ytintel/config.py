@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     max_searches_per_request: int = 3
     trusted_proxies: str = ""
     local_base_url: str = "http://localhost:8000"
+    # The /tester page is on by default only for local runs (no public URL); never on Render
+    # unless explicitly enabled with YT_ENABLE_TESTER=true.
+    enable_tester: bool | None = None
+
+    @property
+    def tester_enabled(self) -> bool:
+        return self.enable_tester if self.enable_tester is not None else not self.public_base_url
 
     @property
     def database_connection(self) -> str | None:

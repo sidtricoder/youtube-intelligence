@@ -8,8 +8,8 @@ Ordinary tests run offline with synthetic identities, metadata and credentials. 
 | FR2 similar channels | lookup/rank, service, adapter, public policy | handle/details, workflow, anonymous real-TCP MCP |
 | FR3 recommendations | user context, scoped credentials/cache, service/provider | bounded profile/exclusion, A/B account separation, protected real TCP |
 | FR4 engagement | domain dates/statistics, user service/provider | sample/UTC/period cases, subject isolation, protected real TCP |
-| FR5 playlist | public preview, protected draft, tenant store, browser approval | constraints, ownership/CSRF, atomic claim/replay, partial/uncertain writes |
-| Video-to-playlist skill | packaged skill, prompt/resource, workflow | metadata-only summary, stateless public preview, own-session approval |
+| FR5 playlist | protected draft, tenant store, browser approval | constraints, ownership/CSRF, atomic claim/replay, partial/uncertain writes |
+| Video-to-playlist skill | packaged skill, prompt/resource, workflow | metadata-only summary, signed-in draft, own-session approval |
 | TQ1 unit | domain, security policy/clock/store, quotas | deterministic validation, expiry, scope/audience, informational usage counters |
 | TQ2 integration | Google adapter, identity/refresh, encrypted storage | response/pagination/write shapes, signature/nonce, wrong-sub refresh rejection |
 | TQ3 MCP system | real TCP + uvicorn + official SDK client | `tests/test_mixed_mcp.py`: public/protected tools, metadata/challenge, registration/token flow |
@@ -39,7 +39,7 @@ For opt-in PostgreSQL tests, supply `TEST_DATABASE_URL` for a dedicated test end
 
 ## End-user acceptance
 
-1. Open the deployed root page anonymously; ask the MCP connector for similar videos and a constrained preview. Confirm public results are not personalized and the preview is not an approved persistent draft.
+1. Open the deployed root page anonymously; ask the MCP connector for similar videos. Confirm public results are not personalized and that building a playlist (`create_playlist_draft`) asks for sign-in.
 2. Ask for personal recommendations. Complete sign-in through **Sign In Now** with Google account A. Confirm default consent is OpenID plus YouTube read-only.
 3. In a separate browser/client session sign in as B. Verify B's recommendations and drafts cannot reveal A's data. Try an A draft ID from B; read, approve, resume and status must fail without revealing the draft. Disconnect B and confirm A still works.
 4. As A, create a protected draft. In A's browser, explicitly enable playlist writes, complete Google's broader consent, then create a fresh draft if consent invalidated it. Review ordered videos and constraints before approving the exact draft. Confirm only A's private playlist changes.
