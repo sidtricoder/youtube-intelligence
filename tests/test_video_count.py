@@ -248,6 +248,9 @@ async def test_ai_client_gets_exactly_the_count_it_asked_for(tmp_path):
             too_many = await draft(video_count=10)
             at_most = await draft(video_count=10, count_mode="at_most")
     assert len(exact["videos"]) == 3 and exact["constraint_check"]["count_satisfied"] is True
+    link = wire.origin + "/approve/" + exact["id"]
+    assert exact["approval_url"] == exact["confirmation_link"] == link
+    assert link in exact["next_step"] and "REQUIRED" in exact["next_step"]
     assert too_many["error"]["code"] == "not_enough_videos"
     assert 1 <= len(at_most["videos"]) <= 10
 
@@ -283,3 +286,8 @@ def test_tester_page_is_off_for_a_public_deployment(tmp_path):
     finally:
         app.state.store.close()
 
+
+def test_ai_instructions_make_the_confirmation_link_mandatory():
+    instructions = build_mcp(lambda _: None).instructions
+    assert "MANDATORY" in instructions and "approval_url" in instructions
+    assert "never make the user ask for it" in instructions.lower()

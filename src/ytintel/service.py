@@ -326,6 +326,29 @@ class Intelligence:
             )
         return chosen
 
+    async def _read_back(self, d):
+        """Ask YouTube (playlistItems.list) how many videos the new playlist really holds."""
+        if not hasattr(self.provider, "playlist_video_ids"):
+            return {"checked": False}
+        try:
+            # Paid for by the write reservation in _write; no nested quota acquisition.
+            ids = await self.provider.playlist_video_ids(d["playlist_id"])
+        except AppError as exc:
+            return {"checked": False, "error": exc.code}
+        expected = [v["id"] for v in d["videos"]]
+        c = Constraints(**d["constraints"])
+        check = {
+            "checked": True,
+            "item_count": len(ids),
+            "expected_count": len(expected),
+            "matches_draft": sorted(ids) == sorted(expected),
+            "within_count_limits": (c.max_videos is None or len(ids) <= c.max_videos)
+            and (c.min_videos is None or len(ids) >= c.min_videos),
+        }
+        if not check["matches_draft"]:
+            event("playlist.readback_mismatch", warning=True, video_count=len(ids))
+        return check
+
     def _authenticated(self):
         if not isinstance(self.context, UserContext):
             raise AppError("authentication_required", "Sign in to access account data", 401)

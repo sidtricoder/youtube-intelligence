@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ytintel.app import create_app
 from ytintel.config import Settings
-from ytintel.domain import Constraints
+from ytintel.domain import Constraints, select
 from ytintel.errors import AppError
 
 
@@ -64,24 +64,25 @@ async def check(output: Path):
             return {"ranked_candidates": len(rows)}
 
         async def preview():
-            d = await service.preview(
-                Constraints(
-                    topic="Python programming tutorial", total_seconds=3600, max_seconds=1200
-                )
+            # Live search + the same selection create_playlist_draft uses, without saving a draft.
+            constraints = Constraints(
+                topic="Python programming tutorial", total_seconds=3600, max_seconds=1200
             )
-            assert 0 < d["total_seconds"] <= 3600
-            assert all(0 < v["seconds"] <= 1200 for v in d["videos"])
-            return {
-                "preview_videos": len(d["videos"]),
-                "total_seconds": d["total_seconds"],
-                "persisted_draft": False,
-            }
+            with service.quota.reserve(2, 1):
+                candidates = await service.provider.search(constraints.topic)
+            chosen = select(candidates, constraints)
+            total = sum(v.seconds for v in chosen)
+            assert chosen and 0 < total <= 3600
+            assert all(0 < v.seconds <= 1200 for v in chosen)
+            return {"preview_videos": len(chosen), "total_seconds": total, "persisted_draft": False}
 
         async with app.router.lifespan_context(app):
             await record("Official videos.list with supplied API key", direct_video)
             await record("FR1 live similar videos", similar_video)
             await record("FR2 live similar channels", similar_channel)
-            await record("FR5 live constrained playlist preview (no write)", preview)
+            await record(
+                "FR5 live constrained playlist selection preview (no draft, no write)", preview
+            )
             report["quota"] = service.quota.status()
         report["blocked_checks"] = [
             {"name": "FR3 live personal recommendations", "reason": "User OAuth sign-in required"},
