@@ -58,4 +58,4 @@ async def test_platform_head_probes_work_and_health_identifies_deployed_version(
                 assert response.status_code == 200
                 assert response.content == b""
             health = (await client.get("/health")).json()
-            assert health["version"] == "2.6.1"
+            assert health["version"] == "2.6.2"

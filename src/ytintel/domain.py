@@ -176,15 +176,25 @@ def violations(videos: list[Video], c: Constraints) -> list[str]:
     return problems
 
 
-def constraint_check(videos: list[Video], c: Constraints) -> dict:
+def constraint_check(
+    videos: list[Video], c: Constraints, *, durations_verified: bool = False
+) -> dict:
     """Machine-readable proof, returned with every proposal, that the limits were applied."""
-    seconds = [v.seconds for v in videos]
+    shortest = min(videos, key=lambda v: v.seconds, default=None)
+    longest = max(videos, key=lambda v: v.seconds, default=None)
     return {
         "video_count": len(videos),
-        "shortest_seconds": min(seconds) if seconds else None,
-        "longest_seconds": max(seconds) if seconds else None,
-        "total_seconds": sum(seconds),
+        "shortest_seconds": shortest.seconds if shortest else None,
+        "shortest_video": {"id": shortest.id, "title": shortest.title, "seconds": shortest.seconds}
+        if shortest
+        else None,
+        "longest_seconds": longest.seconds if longest else None,
+        "total_seconds": sum(v.seconds for v in videos),
         "all_satisfied": not violations(videos, c),
+        "durations_verified": durations_verified,
+        "duration_source": "YouTube videos.list contentDetails.duration, re-fetched without cache"
+        if durations_verified
+        else "YouTube videos.list contentDetails.duration (search-time fetch)",
     }
 
 

@@ -432,3 +432,126 @@ async def test_google_deep_search_stops_at_the_request_budget_and_without_a_targ
     await provider.search_deep("python")
     assert calls and "videoDuration" not in calls[0], "no bucket means plain 'any' search"
     store.close()
+
+
+class VerifyingProvider(FixtureProvider):
+    """Search shows stale durations; videos.list (fresh_videos) is the exact truth."""
+
+    def __init__(self, stale, truth):
+        super().__init__()
+        self.items, self.truth, self.fresh_calls = stale, truth, []
+
+    async def fresh_videos(self, ids):
+        self.fresh_calls.append(list(ids))
+        return [self.truth[i] for i in ids if i in self.truth]
+
+
+def six_videos():
+    return [video(f"s{n:010d}", 400) for n in range(6)]
+
+
+async def test_stale_or_missing_durations_are_replaced_by_exact_ones(deep_service):
+    """The search-time duration said 400s but the real video is 200s, or it is gone."""
+    stale = six_videos()
+    truth = {v.id: v for v in stale}
+    truth[stale[0].id] = video(stale[0].id, 200)
+    del truth[stale[1].id]
+    provider = VerifyingProvider(stale, truth)
+    service = await deep_service(provider)
+    draft = await service.propose(
+        Constraints(topic="Python", max_videos=4, min_seconds=300), exclude_saved=False
+    )
+    ids = [v["id"] for v in draft["videos"]]
+    assert len(ids) == 4 and stale[0].id not in ids and stale[1].id not in ids
+    assert all(truth[i].seconds >= 300 for i in ids)
+    check = draft["constraint_check"]
+    assert check["durations_verified"] is True and check["all_satisfied"] is True
+    assert check["shortest_video"]["id"] in ids
+    assert 1 <= len(provider.fresh_calls) <= 3
+
+
+async def test_a_video_that_changes_between_draft_and_write_is_skipped_and_reported(deep_service):
+    stale = six_videos()
+    truth = {v.id: v for v in stale}
+    provider = VerifyingProvider(stale, truth)
+    service = await deep_service(provider)
+    draft = await service.propose(
+        Constraints(topic="Python", max_videos=3, min_seconds=300), exclude_saved=False
+    )
+    changed = draft["videos"][0]["id"]
+    truth[changed] = video(changed, 120)
+    done = await service.approve(draft["id"], "CREATE")
+    assert done["status"] == "complete"
+    assert changed not in done["inserted"] and len(done["inserted"]) == 2
+    assert done["skipped"][0]["id"] == changed and "no longer meets" in done["skipped"][0]["reason"]
+    assert done["constraint_check"]["all_satisfied"] is True
+    written = sorted(video_ident for _, video_ident in provider.inserted)
+    assert written == sorted(done["inserted"]) and changed not in written
+
+
+async def test_nothing_is_written_when_no_drafted_video_still_fits(deep_service):
+    stale = six_videos()
+    truth = {v.id: v for v in stale}
+    provider = VerifyingProvider(stale, truth)
+    service = await deep_service(provider)
+    draft = await service.propose(
+        Constraints(topic="Python", max_videos=3, min_seconds=300), exclude_saved=False
+    )
+    for item in draft["videos"]:
+        truth[item["id"]] = video(item["id"], 60)
+    with pytest.raises(AppError) as caught:
+        await service.approve(draft["id"], "CREATE")
+    assert caught.value.code == "no_matches"
+    assert not provider.created and not provider.inserted
+
+
+async def test_similar_videos_are_labelled_as_unfiltered_suggestions(deep_service):
+    service = await deep_service(FixtureProvider())
+    result = await service.video_to_playlist(
+        "aaaaaaaaaaa", Constraints(topic="Python", min_seconds=650)
+    )
+    assert all(v["seconds"] >= 650 for v in result["preview"]["videos"])
+    assert "not filtered" in result["similar_note"]
+    assert {x["meets_limits"] for x in result["similar"]} == {True, False}
+    assert all(x["meets_limits"] == (x["video"]["seconds"] >= 650) for x in result["similar"])
+
+
+async def test_fresh_videos_bypasses_the_response_cache(tmp_path):
+    hits = []
+
+    def handler(request):
+        hits.append(request.url.path)
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "id": "aaaaaaaaaaa",
+                        "snippet": {
+                            "title": "Python",
+                            "channelId": "UC" + "a" * 22,
+                            "channelTitle": "Test",
+                        },
+                        "contentDetails": {"duration": "PT4M59S"},
+                    }
+                ]
+            },
+        )
+
+    store = Store(str(tmp_path / "fresh.db"), Fernet.generate_key().decode())
+
+    async def token():
+        return "synthetic-token"
+
+    provider = GoogleProvider(
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        token,
+        store,
+        public_api_key="synthetic-key",
+    )
+    assert (await provider.videos(["aaaaaaaaaaa"]))[0].seconds == 299
+    await provider.videos(["aaaaaaaaaaa"])
+    assert len(hits) == 1, "ordinary reads are cached"
+    assert (await provider.fresh_videos(["aaaaaaaaaaa"]))[0].seconds == 299
+    assert len(hits) == 2, "fresh_videos must hit videos.list again"
+    store.close()

@@ -36,7 +36,7 @@ class GoogleProvider:
         )
         self.public_api_key = public_api_key
 
-    async def request(self, endpoint, params=None, body=None):
+    async def request(self, endpoint, params=None, body=None, *, fresh=False):
         method = "POST" if body is not None else "GET"
         started = time.monotonic()
         operation = (
@@ -61,7 +61,7 @@ class GoogleProvider:
         cache_store = self.public_store if public else self.store
         if not public and isinstance(self.context, AnonymousContext):
             raise AppError("authentication_required", "Sign in to access account data", 401)
-        if method == "GET":
+        if method == "GET" and not fresh:
             cached = cache_store.get(key)
             if cached is not None:
                 event("youtube.cache_hit", endpoint=operation, public=public)
@@ -173,12 +173,18 @@ class GoogleProvider:
                 break
         return items, bool(token)
 
-    async def videos(self, ids):
+    async def fresh_videos(self, ids):
+        """Exact metadata and durations straight from videos.list, never from the response cache."""
+        return await self.videos(ids, fresh=True)
+
+    async def videos(self, ids, fresh=False):
         result = []
         ids = list(dict.fromkeys(ids))
         for i in range(0, len(ids), 50):
             data = await self.request(
-                "videos", {"part": "snippet,contentDetails", "id": ",".join(ids[i : i + 50])}
+                "videos",
+                {"part": "snippet,contentDetails", "id": ",".join(ids[i : i + 50])},
+                fresh=fresh,
             )
             for v in data.get("items", []):
                 s = v["snippet"]

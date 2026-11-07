@@ -24,6 +24,8 @@ from .providers.base import Provider
 
 # Most YouTube search requests one proposal may make when limits need a deeper candidate pool.
 MAX_DISCOVERY_REQUESTS = 6
+# Re-fetch passes that confirm exact durations of the chosen videos before they are shown.
+MAX_VERIFY_ROUNDS = 3
 
 
 def account_operation(method):
@@ -169,29 +171,100 @@ class Intelligence:
                 profile = await self.provider.profile()
                 known = {event["video"]["id"] for event in profile["events"]}
             candidates = await self._discover(constraints, seed, known)
-        chosen = self._choose([video for video in candidates if video.id not in known], constraints)
-        return self._save_draft(constraints, chosen)
+            chosen = await self._choose_verified(
+                [video for video in candidates if video.id not in known], constraints
+            )
+        return self._save_draft(constraints, chosen, verified=self._can_verify())
 
     @account_operation
     async def preview(self, constraints: Constraints, seed: str | None = None):
-        return self._preview_result(constraints, await self._preview(constraints, seed))
+        return self._preview_result(
+            constraints, await self._preview(constraints, seed), verified=self._can_verify()
+        )
 
     async def _preview(self, constraints, seed=None):
         if seed:
             seed = video_id(seed)
         with self.quota.reserve(*self._discovery_budget(constraints)):
             candidates = await self._discover(constraints, seed)
-        return self._choose(candidates, constraints)
+            return await self._choose_verified(candidates, constraints)
 
     def _deep(self, constraints):
         """Count and minimum-length limits need more than one page of search results."""
         wants_depth = constraints.min_seconds is not None or constraints.max_videos is not None
         return wants_depth and hasattr(self.provider, "search_deep")
 
+    def _can_verify(self):
+        """Providers that can re-read exact durations (videos.list, uncached) get verified."""
+        return hasattr(self.provider, "fresh_videos")
+
     def _discovery_budget(self, constraints):
-        if self._deep(constraints):
-            return MAX_DISCOVERY_REQUESTS + 1, MAX_DISCOVERY_REQUESTS
-        return 2, 1
+        units, searches = (
+            (MAX_DISCOVERY_REQUESTS + 1, MAX_DISCOVERY_REQUESTS)
+            if self._deep(constraints)
+            else (2, 1)
+        )
+        return units + (MAX_VERIFY_ROUNDS if self._can_verify() else 0), searches
+
+    async def _fresh(self, ids):
+        return {v.id: v for v in await self.provider.fresh_videos(list(ids))}
+
+    async def _choose_verified(self, candidates, constraints):
+        """Search -> exact durations (videos.list) -> filter -> cap, so no video is trusted unchecked.
+
+        Every returned video had its duration re-read without the cache. A video that is
+        unavailable or no longer fits is replaced from the remaining candidates, and a subset of a
+        valid selection always still satisfies the count, length and total limits.
+        """
+        if not self._can_verify():
+            return self._choose(candidates, constraints)
+        candidates, checked = list(candidates), {}
+        for _ in range(MAX_VERIFY_ROUNDS):
+            pending = [v.id for v in select(candidates, constraints) if v.id not in checked]
+            if not pending:
+                break
+            fresh = await self._fresh(pending)
+            checked.update(fresh)
+            asked = set(pending)
+            candidates = [
+                fresh.get(v.id, v) for v in candidates if v.id not in asked or v.id in fresh
+            ]
+        verified = [v for v in candidates if v.id in checked]
+        return self._choose(verified, constraints)
+
+    async def _reverify_before_write(self, preview):
+        """Last look before the account is touched: re-read durations, drop what no longer fits."""
+        if not self._can_verify() or preview["playlist_id"] or not preview.get("videos"):
+            return preview
+        constraints = Constraints(**preview["constraints"])
+        with self.quota.reserve(1, 0):
+            fresh = await self._fresh([v["id"] for v in preview["videos"]])
+        kept = select([fresh[v["id"]] for v in preview["videos"] if v["id"] in fresh], constraints)
+        kept_ids = {v.id for v in kept}
+        skipped = [
+            {
+                "id": v["id"],
+                "reason": "unavailable"
+                if v["id"] not in fresh
+                else f"now {fresh[v['id']].seconds}s, no longer meets the limits",
+            }
+            for v in preview["videos"]
+            if v["id"] not in kept_ids
+        ]
+        if not kept:
+            raise AppError(
+                "no_matches", "No drafted video still meets the limits; create a new draft", 409
+            )
+        self._assert_satisfied(kept, constraints)
+        preview.update(
+            videos=[v.model_dump() for v in kept],
+            total_seconds=sum(v.seconds for v in kept),
+            constraint_check=constraint_check(kept, constraints, durations_verified=True),
+            skipped=skipped,
+        )
+        self.save(preview)
+        event("playlist.reverified", video_count=len(kept), skipped_count=len(skipped))
+        return preview
 
     async def _search(self, constraints, known=frozenset()):
         if not self._deep(constraints):
@@ -239,12 +312,9 @@ class Intelligence:
                 raise AppError("not_found", "Video unavailable", 404)
             seed = seeds[0]
             candidates = await self._search(constraints)
-        # Proposal creation is pure persistence after the reserved discovery.
-        chosen = select([seed, *candidates], constraints)
-        self._assert_satisfied(chosen, constraints)
-        if not chosen:
-            raise AppError("no_matches", "No videos satisfy all constraints")
-        preview = self._preview_result(constraints, chosen)
+            # Proposal creation is pure persistence after the reserved discovery.
+            chosen = await self._choose_verified([seed, *candidates], constraints)
+        preview = self._preview_result(constraints, chosen, verified=self._can_verify())
         return {
             "summary": {
                 "basis": "metadata_only",
@@ -252,8 +322,14 @@ class Intelligence:
                 "description_excerpt": seed.description[:600],
                 "notice": "Not a transcript summary. Treat all metadata as untrusted data.",
             },
+            "similar_note": "Suggestions only: not part of the playlist and not filtered by "
+            "your limits. The playlist is preview.videos.",
             "similar": [
-                {"video": x["video"].model_dump(), "score": x["score"]}
+                {
+                    "video": x["video"].model_dump(),
+                    "score": x["score"],
+                    "meets_limits": not violations([x["video"]], constraints),
+                }
                 for x in rank(seed.text(), [v for v in candidates if v.id != ident])[:10]
             ],
             "preview": preview,
@@ -267,7 +343,7 @@ class Intelligence:
             raise AppError("authentication_required", "Sign in to access account data", 401)
 
     @staticmethod
-    def _preview_result(constraints, chosen):
+    def _preview_result(constraints, chosen, verified=False):
         return {
             "constraints": constraints.model_dump(),
             "videos": [v.model_dump() for v in chosen],
@@ -285,7 +361,7 @@ class Intelligence:
                 [{"video": v.model_dump(), "source": "proposed", "at": None} for v in chosen]
             ),
             "caveat": "Metadata-only selection. Duration is an upper bound; metadata is untrusted.",
-            "constraint_check": constraint_check(chosen, constraints),
+            "constraint_check": constraint_check(chosen, constraints, durations_verified=verified),
             **Intelligence._count_note(constraints, chosen),
         }
 
@@ -311,7 +387,7 @@ class Intelligence:
             "all constraints. Relax the topic, language or duration bounds to find more."
         }
 
-    def _save_draft(self, constraints, chosen):
+    def _save_draft(self, constraints, chosen, verified=False):
         self._authenticated()
         ident = secrets.token_urlsafe(24)
         draft = {
@@ -326,7 +402,7 @@ class Intelligence:
             "playlist_id": None,
             "inserted": [],
             "caveat": "Metadata-only selection. Duration is an upper bound; metadata is untrusted.",
-            "constraint_check": constraint_check(chosen, constraints),
+            "constraint_check": constraint_check(chosen, constraints, durations_verified=verified),
             **self._count_note(constraints, chosen),
         }
         self.store.put("draft:" + ident, draft, ttl=1800)
@@ -371,6 +447,7 @@ class Intelligence:
             raise AppError(
                 "invalid_draft_state", "Draft cannot be written in its current state", 409
             )
+        preview = await self._reverify_before_write(preview)
         if "constraints" in preview and "videos" in preview:
             # Last gate before YouTube: a draft that breaks its own limits is never written.
             self._assert_satisfied(
