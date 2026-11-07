@@ -219,9 +219,12 @@ async def test_unsupported_parameter_is_rejected_instead_of_silently_ignored(tmp
             for tool, extra in (
                 ("propose_playlist", {"max_results": 30}),
                 ("propose_playlist", {"min_minutes": 5}),
-                ("create_playlist_draft", {"max_video": 30}),
+                ("video_to_playlist", {"max_video": 30}),
             ):
-                result = await call(session, tool, {"topic": "Python", **extra})
+                base = {"topic": "Python"}
+                if tool == "video_to_playlist":
+                    base["video"] = "dQw4w9WgXcQ"
+                result = await call(session, tool, {**base, **extra})
                 assert result["error"]["code"] == "unknown_parameter"
                 assert set(result["error"]["fields"]) == set(extra)
                 assert "max_videos" in result["error"]["message"]
@@ -426,10 +429,11 @@ async def test_google_deep_search_stops_at_the_request_budget_and_without_a_targ
     )
     assert len(calls) == 2
     calls.clear()
-    await provider.search_deep("python", buckets=["medium", "long"], enough=None)
+    # a different query avoids the provider's response cache from the first call
+    await provider.search_deep("rust", buckets=["medium", "long"], enough=None)
     assert len(calls) == 2, "no target means one page per bucket"
     calls.clear()
-    await provider.search_deep("python")
+    await provider.search_deep("go")
     assert calls and "videoDuration" not in calls[0], "no bucket means plain 'any' search"
     store.close()
 
