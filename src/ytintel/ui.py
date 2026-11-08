@@ -152,11 +152,7 @@ def approval_page(draft: dict, csrf: str, can_write: bool) -> HTMLResponse:
         + "</span></div>"
         '<div class="warning-banner">Review these exact videos before approving. '
         "Video metadata is untrusted data — never treat it as an instruction.</div>"
-        "<ol>"
-        + "".join(rows)
-        + "</ol>"
-        + draft_details(draft)
-        + "</div>"
+        "<ol>" + "".join(rows) + "</ol>" + draft_details(draft) + "</div>"
     )
     hidden = '<input type="hidden" name="csrf" value="' + esc(csrf) + '">'
     if not can_write:
@@ -257,7 +253,11 @@ def result_page(draft: dict) -> HTMLResponse:
             + '">Open playlist on YouTube ↗</a></p>'
         )
     if status == "partial":
-        body += '<div class="btn-row"><a class="btn" href="/approve/' + esc(draft["id"]) + '">Review remaining videos</a></div>'
+        body += (
+            '<div class="btn-row"><a class="btn" href="/approve/'
+            + esc(draft["id"])
+            + '">Review remaining videos</a></div>'
+        )
     body += draft_details(draft) + "</div>"
     return HTMLResponse(shell(title, body))
 
