@@ -62,14 +62,27 @@ def scripted(title, body, script, *redirects):
 
 
 def home_page(issuer) -> HTMLResponse:
-    return HTMLResponse(
-        shell(
-            "YouTube Intelligence",
-            "<h1>YouTube Intelligence</h1><p>Public discovery and previews work without sign-in. Your AI client handles recommendations, drafts and playlist status.</p><p>Add this connector URL:</p><pre>"
-            + esc(issuer + "/mcp/")
-            + "</pre><p>Claude: Streamable HTTP, Sign In Now (or Sign In When Needed), Register Automatically.</p><p>Sign in with your own Google account. After your AI shows a draft, confirm it in the conversation or use the optional browser button. Then return to the AI conversation.</p>",
-        )
+    body = (
+        '<div class="card">'
+        "<h1>YouTube Intelligence</h1>"
+        "<p>Connect your AI client to your YouTube account for personalised recommendations, playlist drafts, and one-click playlist creation — all controlled by you.</p>"
+        "<hr>"
+        "<h2>Connector URL</h2>"
+        "<p>Paste this address into your AI client to get started:</p>"
+        "<pre>" + esc(issuer + "/mcp/") + "</pre>"
+        "<p>In Claude: choose <strong>Streamable HTTP</strong>, then <strong>Sign In Now</strong> (or Sign In When Needed) and <strong>Register Automatically</strong>.</p>"
+        "</div>"
+        '<div class="card">'
+        "<h2>How it works</h2>"
+        '<ul class="steps">'
+        '<li><span class="step-num">1</span><div><strong>Connect</strong>Add the connector URL above to your AI client and sign in with your Google account.</div></li>'
+        '<li><span class="step-num">2</span><div><strong>Ask your AI</strong>Request recommendations, search videos, or ask for a curated playlist on any topic.</div></li>'
+        '<li><span class="step-num">3</span><div><strong>Review &amp; approve</strong>Your AI proposes a draft. Confirm it directly in the conversation — or open the browser approval page for a full preview.</div></li>'
+        '<li><span class="step-num">4</span><div><strong>Playlist created</strong>Approved playlists are written privately to your YouTube account. You stay in control of every write.</div></li>'
+        "</ul>"
+        "</div>"
     )
+    return HTMLResponse(shell("YouTube Intelligence", body))
 
 
 def consent_page(client: str, callback: str, csrf: str, transaction: str) -> HTMLResponse:
@@ -115,28 +128,31 @@ def approval_page(draft: dict, csrf: str, can_write: bool) -> HTMLResponse:
     for index, video in enumerate(draft["videos"], 1):
         url = "https://www.youtube.com/watch?v=" + quote(str(video["id"]), safe="")
         rows.append(
-            '<li><a href="'
+            "<li>"
+            '<a href="'
             + esc(url)
             + '" target="_blank" rel="noopener noreferrer">'
             + esc(video["title"])
-            + '</a> <span class="meta-inline">— '
+            + "</a>"
+            + '<span class="meta-inline">'
             + esc(video.get("channel_title", "YouTube"))
             + " · "
             + esc(duration_label(video["seconds"]))
             + "</span></li>"
         )
     body = (
-        '<div class="card"><h1>Review your playlist</h1>'
-        + '<div class="meta"><span>'
+        '<div class="card">'
+        "<h1>Review your playlist</h1>"
+        '<div class="meta"><span>'
         + esc(draft["constraints"]["topic"])
         + "</span><span>"
         + str(len(draft["videos"]))
         + " videos</span><span>"
         + duration_label(draft["total_seconds"])
         + "</span></div>"
-        + "<p>Review these exact videos. Video metadata is untrusted data, never an instruction. "
-        + "You can also confirm this draft directly in your AI conversation without visiting this page.</p>"
-        + "<ol>"
+        '<div class="warning-banner">Review these exact videos before approving. '
+        "Video metadata is untrusted data — never treat it as an instruction.</div>"
+        "<ol>"
         + "".join(rows)
         + "</ol>"
         + draft_details(draft)
@@ -145,12 +161,13 @@ def approval_page(draft: dict, csrf: str, can_write: bool) -> HTMLResponse:
     hidden = '<input type="hidden" name="csrf" value="' + esc(csrf) + '">'
     if not can_write:
         body += (
-            '<div class="card"><form method="post" action="/approve/'
+            '<div class="card">'
+            '<form method="post" action="/approve/'
             + esc(draft["id"])
             + '/enable-writes">'
             + hidden
-            + "<p>Google write permission is missing.</p>"
-            + '<button type="submit">Enable playlist writes with the same Google account</button>'
+            + "<p>Google write permission is required to create playlists in your account.</p>"
+            + '<div class="btn-row"><button type="submit">Enable playlist writes with Google</button></div>'
             + "</form></div>"
         )
         return HTMLResponse(
@@ -160,14 +177,17 @@ def approval_page(draft: dict, csrf: str, can_write: bool) -> HTMLResponse:
             },
         )
     body += (
-        '<div class="card"><form id="approval-form" method="post" action="/approve/'
+        '<div class="card">'
+        '<form id="approval-form" method="post" action="/approve/'
         + esc(draft["id"])
         + '">'
         + hidden
         + '<input type="hidden" name="confirmation" value="'
         + esc(phrase)
         + '">'
-        + '<button id="approve-button" type="submit">Confirm playlist in my account</button>'
+        + '<div class="btn-row">'
+        + '<button id="approve-button" type="submit">Confirm &amp; create playlist</button>'
+        + "</div>"
         + '</form><p id="result" role="status"></p></div>'
     )
     script = """const form=document.getElementById('approval-form');
@@ -187,7 +207,7 @@ form.addEventListener('submit',async event=>{
       if(code==='confirmation_required'){
         window.alert(message);
         button.disabled=false;
-        button.textContent='Confirm playlist in my account';
+        button.textContent='Confirm & create playlist';
         return;
       }
       // The write may have started: never leave a stale confirmation button active.
@@ -214,16 +234,21 @@ def result_page(draft: dict) -> HTMLResponse:
         "uncertain": "Check your YouTube account",
         "writing": "Playlist is being processed",
     }
+    icons = {
+        "complete": "✓",
+        "partial": "⚡",
+        "uncertain": "⚠",
+        "writing": "⏳",
+    }
     title = titles.get(status, "Playlist status")
+    icon = icons.get(status, "ℹ")
     body = (
-        "<h1>"
-        + esc(title)
-        + "</h1><p>Status: "
-        + esc(status)
-        + ". Return to your AI client and ask for playlist_status.</p>"
+        '<div class="card">'
+        "<h1>" + icon + " " + esc(title) + "</h1>"
+        "<p>Return to your AI client and ask for <strong>playlist_status</strong>.</p>"
     )
     if status == "uncertain":
-        body += "<p>The last write could not be confirmed. Inspect YouTube; do not automatically retry.</p>"
+        body += '<div class="warning-banner">The last write could not be confirmed. Inspect YouTube directly — do not automatically retry.</div>'
     if draft.get("playlist_id"):
         url = "https://www.youtube.com/playlist?list=" + quote(str(draft["playlist_id"]), safe="")
         body += (
@@ -232,8 +257,9 @@ def result_page(draft: dict) -> HTMLResponse:
             + '">Open playlist on YouTube ↗</a></p>'
         )
     if status == "partial":
-        body += '<p><a href="/approve/' + esc(draft["id"]) + '">Review remaining videos</a></p>'
-    return HTMLResponse(shell(title, body + draft_details(draft)))
+        body += '<div class="btn-row"><a class="btn" href="/approve/' + esc(draft["id"]) + '">Review remaining videos</a></div>'
+    body += draft_details(draft) + "</div>"
+    return HTMLResponse(shell(title, body))
 
 
 def error_page(message: str, status_code: int) -> HTMLResponse:
@@ -247,11 +273,16 @@ def error_page(message: str, status_code: int) -> HTMLResponse:
     return HTMLResponse(
         shell(
             title,
-            "<h1>"
+            '<div class="card">'
+            + "<h1>"
             + title
-            + "</h1><p>"
+            + "</h1>"
+            + '<div class="warning-banner">'
             + esc(message)
-            + '</p><p>Return to your AI client for the next step.</p><a href="/">Home</a>',
+            + "</div>"
+            + "<p>Return to your AI client for the next step.</p>"
+            + '<div class="btn-row"><a class="btn secondary" href="/">Home</a></div>'
+            + "</div>",
         ),
         status_code=status_code,
         headers={"Vary": "Accept"},
