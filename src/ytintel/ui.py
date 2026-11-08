@@ -162,8 +162,8 @@ def approval_page(draft: dict, csrf: str, can_write: bool) -> HTMLResponse:
             + esc(draft["id"])
             + '/enable-writes">'
             + hidden
-            + "<p>Google write permission is required to create playlists in your account.</p>"
-            + '<div class="btn-row"><button type="submit">Enable playlist writes with Google</button></div>'
+            + "<p>Google write permission is missing.</p>"
+            + '<div class="btn-row"><button type="submit">Enable playlist writes with the same Google account</button></div>'
             + "</form></div>"
         )
         return HTMLResponse(
