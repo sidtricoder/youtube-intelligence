@@ -65,7 +65,7 @@ def home_page(issuer) -> HTMLResponse:
     body = (
         '<div class="card">'
         "<h1>YouTube Intelligence</h1>"
-        "<p>Connect your AI client to your YouTube account for personalised recommendations, playlist drafts, and one-click playlist creation — all controlled by you.</p>"
+        "<p>Public discovery and previews work without sign-in. Connect your AI client to your YouTube account for personalised recommendations, playlist drafts, and one-click playlist creation — all controlled by you.</p>"
         "<hr>"
         "<h2>Connector URL</h2>"
         "<p>Paste this address into your AI client to get started:</p>"
@@ -186,7 +186,7 @@ def approval_page(draft: dict, csrf: str, can_write: bool) -> HTMLResponse:
         + esc(phrase)
         + '">'
         + '<div class="btn-row">'
-        + '<button id="approve-button" type="submit">Confirm &amp; create playlist</button>'
+        + '<button id="approve-button" type="submit">Confirm playlist in my account</button>'
         + "</div>"
         + '</form><p id="result" role="status"></p></div>'
     )
@@ -207,7 +207,7 @@ form.addEventListener('submit',async event=>{
       if(code==='confirmation_required'){
         window.alert(message);
         button.disabled=false;
-        button.textContent='Confirm & create playlist';
+        button.textContent='Confirm playlist in my account';
         return;
       }
       // The write may have started: never leave a stale confirmation button active.
